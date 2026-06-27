@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+.DS_Store
+.pytest_cache/
+
+# market data — keep real ES data out of git
+data/*.csv
+!data/.gitkeep
