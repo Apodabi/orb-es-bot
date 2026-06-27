@@ -88,6 +88,56 @@ def test_no_breakout_no_trade():
     assert trades == []
 
 
+def _day_with_path(or_high, or_low, after_path):
+    """OR oscillation for 30 min, then an explicit list of (open,high,low,close) bars."""
+    rows = []
+    for i in range(30):
+        h, m = 9, 30 + i
+        o = or_low if i % 2 else or_high
+        rows.append((h, m, o, or_high, or_low, o))
+    for i, (o, hi, lo, c) in enumerate(after_path):
+        minute = 30 + i
+        rows.append((10 + minute // 60, minute % 60, o, hi, lo, c))
+    return _bars(rows)
+
+
+def test_breakeven_stop_protects_entry():
+    # Long enters ~4810.25, risk ~10.25. Far 3R target so it won't hit. Price runs
+    # to 1R+ (arms breakeven), then reverses to entry -> exits flat at breakeven.
+    after = [
+        (4811, 4825, 4811, 4824),   # up: arms breakeven (>= entry + 1R)
+        (4824, 4824, 4805, 4806),   # reverses through entry -> breakeven stop
+        (4806, 4807, 4804, 4805),
+    ]
+    df = _day_with_path(4810, 4800, after)
+    cfg = StrategyConfig(name="t", direction="long", stop_type="range",
+                         target_type="r_multiple", r_multiple=3.0, breakeven_at_r=1.0,
+                         slippage_ticks=0, commission_per_side=0, entry_buffer_ticks=1)
+    trades = run_backtest(df, cfg)
+    assert len(trades) == 1
+    t = trades[0]
+    assert t.exit_reason == "stop"
+    assert abs(t.r_multiple) < 0.05   # exited at ~breakeven
+
+
+def test_trailing_stop_locks_in_profit():
+    # Long runs up, trailing stop (40 ticks = 10 pts) follows, then a reversal
+    # takes us out in profit well above entry.
+    after = [
+        (4811, 4815, 4810, 4814),   # entry bar (~4811), no exit yet
+        (4814, 4835, 4814, 4833),   # runs up: trailing stop follows to ~4825
+        (4833, 4833, 4820, 4821),   # dips to 4820 -> hits trailing stop ~4825 in profit
+    ]
+    df = _day_with_path(4810, 4800, after)
+    cfg = StrategyConfig(name="t", direction="long", stop_type="range",
+                         target_type="r_multiple", r_multiple=3.0, trailing_stop_ticks=40,
+                         slippage_ticks=0, commission_per_side=0, entry_buffer_ticks=1)
+    trades = run_backtest(df, cfg)
+    assert len(trades) == 1
+    assert trades[0].exit_reason == "stop"
+    assert trades[0].pnl_usd > 0   # locked in profit, not a loss
+
+
 def test_max_one_trade_per_day():
     df = _minute_series(or_high=4810, or_low=4800, breakout_to=4830)
     cfg = StrategyConfig(name="t", max_trades_per_day=1, slippage_ticks=0,
@@ -100,5 +150,7 @@ if __name__ == "__main__":
     test_long_breakout_hits_target()
     test_short_breakout_hits_target()
     test_no_breakout_no_trade()
+    test_breakeven_stop_protects_entry()
+    test_trailing_stop_locks_in_profit()
     test_max_one_trade_per_day()
     print("all tests passed")

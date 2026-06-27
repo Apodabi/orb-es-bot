@@ -29,7 +29,31 @@ python scripts/make_sample.py          # synthetic ES bars (plumbing only!)
 python tests/test_strategy.py          # unit tests for the entry/exit logic
 python scripts/compare.py              # race all variants vs the 60% gate
 python scripts/run_backtest.py --variant OR30-range-1R --trades   # one variant + trade log
+python scripts/validate.py             # in-sample/out-of-sample robustness of the variants
+python scripts/sweep.py                # 64-config grid sweep, then re-test the IS leaders OOS
 ```
+
+## Validation philosophy
+
+Win rate alone is gameable, and any single backtest period can be curve-fit. So:
+
+- **`validate.py`** splits the history chronologically (default 70/30) and only
+  calls a variant *live-eligible* if it clears the 60% gate **and** stays
+  net-positive on **both** the in-sample and out-of-sample periods.
+- **`sweep.py`** searches a parameter grid in-sample, then re-tests the leaders
+  out-of-sample — surfacing edges that *persist* rather than ones that fit noise.
+
+On the synthetic sample, nothing survives OOS (as it should — it's a random walk).
+
+## Strategy features (configurable in `StrategyConfig`)
+
+| Field | Effect |
+|---|---|
+| `ema_trend_filter` | Only take longs above / shorts below an intraday EMA of this span |
+| `no_entry_after` | Block new entries after this ET time (e.g. `"12:00"`) |
+| `breakeven_at_r` | Move stop to entry once price reaches this R multiple |
+| `trailing_stop_ticks` | Trail the stop this many ticks behind the best price |
+| `stop_type` / `target_type` | `range` / `fixed` / `fraction` stops; `r_multiple` / `fixed` / `range_multiple` targets |
 
 ## Using real ES data (Interactive Brokers)
 

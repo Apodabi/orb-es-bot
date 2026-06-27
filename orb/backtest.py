@@ -82,6 +82,30 @@ def _exit_levels(direction: str, entry: float, or_high: float, or_low: float, cf
     return _round_to_tick(stop, spec), _round_to_tick(target, spec), risk
 
 
+def _manage_stop(pos: dict, bar, cfg: StrategyConfig, spec: ContractSpec) -> None:
+    """Tighten the stop for an open position (breakeven + trailing). Never loosens."""
+    d = pos["direction"]
+    entry, risk = pos["entry_price"], pos["risk"]
+
+    # Move to breakeven once the trade is `breakeven_at_r` R in profit.
+    if cfg.breakeven_at_r > 0 and not pos.get("be_done"):
+        trigger = cfg.breakeven_at_r * risk
+        if d == "long" and bar.high >= entry + trigger:
+            pos["stop"] = max(pos["stop"], _round_to_tick(entry, spec))
+            pos["be_done"] = True
+        elif d == "short" and bar.low <= entry - trigger:
+            pos["stop"] = min(pos["stop"], _round_to_tick(entry, spec))
+            pos["be_done"] = True
+
+    # Trail the stop behind the best price seen.
+    if cfg.trailing_stop_ticks > 0:
+        dist = cfg.trailing_stop_ticks * spec.tick_size
+        if d == "long":
+            pos["stop"] = max(pos["stop"], _round_to_tick(bar.high - dist, spec))
+        else:
+            pos["stop"] = min(pos["stop"], _round_to_tick(bar.low + dist, spec))
+
+
 def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec) -> list[Trade]:
     sess = session_slice(day_df, cfg.session_open, cfg.session_close)
     if len(sess) < cfg.or_minutes + 2:
@@ -102,6 +126,14 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec)
     slip = cfg.slippage_ticks * spec.tick_size
 
     after = sess[sess.index >= or_end]
+
+    # Optional intraday EMA trend filter (computed on the full session, read after OR).
+    ema = None
+    if cfg.ema_trend_filter > 0:
+        ema = sess["close"].ewm(span=cfg.ema_trend_filter, adjust=False).mean()
+
+    cutoff = dt.time.fromisoformat(cfg.no_entry_after) if cfg.no_entry_after else None
+
     trades: list[Trade] = []
     position: Optional[dict] = None
     n_entries = 0
@@ -140,15 +172,25 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec)
                 if not cfg.allow_reentry:
                     n_entries = cfg.max_trades_per_day  # block further entries today
             else:
-                continue  # still in a position, don't look for new entries this bar
+                # Still open: update stop management using THIS bar (affects later bars
+                # only — no intrabar lookahead, since exits were already checked above).
+                _manage_stop(position, bar, cfg, spec)
+                continue  # don't look for new entries while in a position
 
         # --- look for a new entry ---
+        if cutoff is not None and t.time() >= cutoff:
+            continue  # past the no-new-entries time
+
         if position is None and n_entries < cfg.max_trades_per_day:
+            ema_val = float(ema.loc[t]) if ema is not None else None
+            long_ok = cfg.direction in ("both", "long") and (ema_val is None or float(bar.close) >= ema_val)
+            short_ok = cfg.direction in ("both", "short") and (ema_val is None or float(bar.close) <= ema_val)
+
             took = None
-            if cfg.direction in ("both", "long") and bar.high >= long_trigger:
+            if long_ok and bar.high >= long_trigger:
                 fill = max(long_trigger, float(bar.open)) + slip
                 took = ("long", fill)
-            if took is None and cfg.direction in ("both", "short") and bar.low <= short_trigger:
+            if took is None and short_ok and bar.low <= short_trigger:
                 fill = min(short_trigger, float(bar.open)) - slip
                 took = ("short", fill)
 

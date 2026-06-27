@@ -45,3 +45,18 @@ def load_bars(
 def session_slice(day_df: pd.DataFrame, open_str: str, close_str: str) -> pd.DataFrame:
     """Restrict a single day's bars to the [open, close] regular-session window."""
     return day_df.between_time(open_str, close_str)
+
+
+def chronological_split(df: pd.DataFrame, train_frac: float = 0.7):
+    """Split bars into (in-sample, out-of-sample) on a session boundary.
+
+    Splits by unique trading day so no session straddles the cut — essential for
+    honest out-of-sample validation.
+    """
+    days = sorted({ts.date() for ts in df.index})
+    if len(days) < 2:
+        raise ValueError("need at least 2 trading days to split")
+    cut = days[int(len(days) * train_frac)]
+    is_df = df[df.index.map(lambda ts: ts.date() < cut)]
+    oos_df = df[df.index.map(lambda ts: ts.date() >= cut)]
+    return is_df, oos_df

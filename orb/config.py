@@ -62,6 +62,14 @@ class StrategyConfig:
     target_ticks: int = 40
     range_multiple: float = 1.0
 
+    # --- entry filters (option 3) ---
+    ema_trend_filter: int = 0          # 0 = off; else intraday EMA span: longs only above, shorts below
+    no_entry_after: str = ""           # "" = off; e.g. "12:00" blocks new entries after this ET time
+
+    # --- in-trade stop management (option 3) ---
+    breakeven_at_r: float = 0.0        # 0 = off; move stop to entry once price reaches this R
+    trailing_stop_ticks: int = 0       # 0 = off; trail stop this many ticks behind the best price
+
     # --- exits / costs ---
     flatten_at_close: bool = True      # close any open position at session_close
     commission_per_side: float = 2.50  # USD per contract per side
@@ -83,4 +91,8 @@ VARIANTS = [
     StrategyConfig(name="OR30-fixed20t-tgt20t", or_minutes=30, stop_type="fixed", stop_ticks=20, target_type="fixed", target_ticks=20),
     StrategyConfig(name="OR30-half-range-tgt-range", or_minutes=30, stop_type="fraction", stop_fraction=0.5, target_type="range_multiple", range_multiple=1.0),
     StrategyConfig(name="OR30-long-only-1R", or_minutes=30, direction="long", target_type="r_multiple", r_multiple=1.0),
+    # variants exercising the option-3 features
+    StrategyConfig(name="OR30-2R-ema-trend", or_minutes=30, target_type="r_multiple", r_multiple=2.0, ema_trend_filter=20),
+    StrategyConfig(name="OR30-2R-trail40-be1", or_minutes=30, target_type="r_multiple", r_multiple=2.0, breakeven_at_r=1.0, trailing_stop_ticks=40),
+    StrategyConfig(name="OR30-1R-amcutoff", or_minutes=30, target_type="r_multiple", r_multiple=1.0, no_entry_after="12:00"),
 ]
