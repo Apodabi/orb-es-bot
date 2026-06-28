@@ -1,3 +1,4 @@
 pandas>=2.0
 numpy>=1.24
-ib_insync>=0.9.86   # only needed for fetching real data / live trading
+ib_insync>=0.9.86   # TWS/Gateway route: scripts/fetch_data.py -> orb/ibkr.py
+requests>=2.31      # Web API route: ibkr_data.py (Client Portal Gateway)
