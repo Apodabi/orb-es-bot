@@ -114,7 +114,7 @@ class IBKRWebAPI:
     # --- historical bars ---------------------------------------------------
     def get_history(self, conid: int, period: str = "1d", bar: str = "1min",
                     outside_rth: bool = False, start_time: Optional[dt.datetime] = None,
-                    retries: int = 3) -> pd.DataFrame:
+                    retries: int = 5) -> pd.DataFrame:
         """
         OHLCV bars -> UTC-indexed DataFrame.
         bar:    1min,2min,3min,5min,15min,30min,1h,1d
@@ -126,12 +126,24 @@ class IBKRWebAPI:
         if start_time is not None:
             params["startTime"] = start_time.strftime("%Y%m%d-%H:%M:%S")
         payload = {}
-        for _ in range(retries):
-            payload = self._get("/iserver/marketdata/history", **params)
+        for attempt in range(retries):
+            try:
+                payload = self._get("/iserver/marketdata/history", **params)
+            except requests.HTTPError as e:
+                code = e.response.status_code if e.response is not None else None
+                if code in (429, 503) and attempt < retries - 1:
+                    # Pacing / transient unavailability: exponential backoff.
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
             if payload.get("data"):
                 break
             time.sleep(1)  # known empty-first-response quirk
-        rows = payload.get("data", [])
+        # Keep only real bars. The API can return a 1-row placeholder
+        # (startTime 19700101, no "t") for windows with no data — e.g. the
+        # current day before the session — which must not be parsed as a bar.
+        rows = [r for r in payload.get("data", [])
+                if isinstance(r, dict) and "t" in r and "o" in r]
         if not rows:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
         df = (pd.DataFrame(rows)
@@ -158,7 +170,7 @@ class IBKRWebAPI:
                                   outside_rth=outside_rth, start_time=edge)
             if not df.empty:
                 frames.append(df)
-            time.sleep(0.4)  # stay under pacing limits
+            time.sleep(0.75)  # stay under the historical-data pacing limit
         if not frames:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
         out = pd.concat(frames)
