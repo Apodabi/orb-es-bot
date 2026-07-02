@@ -37,7 +37,9 @@ class Metrics:
 
 
 def _max_drawdown(equity: list[float]) -> float:
-    peak = equity[0] if equity else 0.0
+    # Equity starts at 0 before the first trade, so the peak is seeded at 0 —
+    # seeding with equity[0] would hide a drawdown that starts on trade one.
+    peak = 0.0
     mdd = 0.0
     for v in equity:
         peak = max(peak, v)

@@ -21,6 +21,9 @@ class ContractSpec:
 # E-mini S&P 500 futures.
 ES = ContractSpec()
 
+# Micro E-mini: same tick grid, 1/10th the dollar value — the sane first live step.
+MES = ContractSpec(symbol="MES", tick_size=0.25, point_value=5.0)
+
 
 @dataclass
 class StrategyConfig:

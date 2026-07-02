@@ -7,6 +7,7 @@ venv/
 .DS_Store
 .pytest_cache/
 
-# market data — keep real ES data out of git
+# market data + local analysis artifacts — keep out of git
 data/*.csv
+data/*.json
 !data/.gitkeep

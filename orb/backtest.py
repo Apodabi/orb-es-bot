@@ -3,11 +3,29 @@
 Simulates the strategy bar-by-bar over historical OHLCV data. Designed so the
 exact same `StrategyConfig` can later drive a live IBKR executor — only the data
 source and order placement differ.
+
+Fill model (deliberately pessimistic — this feeds a go-live decision):
+- Entries are stop orders: fill at max(trigger, bar open) for longs (gap-through
+  entries fill at the open), plus adverse slippage.
+- The ENTRY bar's remaining range is checked against the stop and target. Bar
+  data can't order intrabar prices, so when the entry bar spans the stop (or
+  both levels) the resolution follows `conservative_fills`: stop first.
+- Stop exits on later bars fill at min(stop, open) for longs / max(stop, open)
+  for shorts — a gap through the stop fills at the open, not at the stop.
+- Target (limit) exits fill at the target, or at the open if the bar gaps
+  beyond it in our favor.
+- Stops and targets are rounded to the tick grid conservatively (stop away from
+  entry = more risk, target toward entry = less reward), and `risk_points`
+  reflects the ACTUAL rounded stop distance.
+- The EMA trend filter reads the PREVIOUS bar's close vs the previous bar's
+  EMA — the entry decision uses only information available before the bar in
+  which the stop order fills. No intrabar lookahead.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import math
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -39,21 +57,52 @@ def _round_to_tick(price: float, spec: ContractSpec) -> float:
     return round(price / spec.tick_size) * spec.tick_size
 
 
-def _opening_range(day_df: pd.DataFrame, cfg: StrategyConfig):
-    """Return (or_high, or_low) from the first `or_minutes` of the session, or None."""
+def _floor_to_tick(price: float, spec: ContractSpec) -> float:
+    return math.floor(price / spec.tick_size + 1e-9) * spec.tick_size
+
+
+def _ceil_to_tick(price: float, spec: ContractSpec) -> float:
+    return math.ceil(price / spec.tick_size - 1e-9) * spec.tick_size
+
+
+def bar_minutes(idx: pd.DatetimeIndex) -> float:
+    """Modal bar interval in minutes (1.0 for 1-minute data)."""
+    if len(idx) < 2:
+        return 1.0
+    diffs = pd.Series(idx[1:]) - pd.Series(idx[:-1])
+    return float(diffs.mode().iloc[0].total_seconds() / 60.0)
+
+
+def _opening_range(day_df: pd.DataFrame, cfg: StrategyConfig, bar_min: float):
+    """Return (or_high, or_low, or_end) from the first `or_minutes` of the session.
+
+    Returns None — skipping the day — if the data does not actually cover the
+    opening range: the first bar must sit exactly on `session_open`, and the OR
+    window must contain every expected bar. An OR computed from partial data is
+    a different (wrong) range, so we refuse to trade such days rather than
+    silently backtesting a fantasy breakout level.
+    """
     open_t = dt.time.fromisoformat(cfg.session_open)
-    start = day_df.index[0].replace(
-        hour=open_t.hour, minute=open_t.minute, second=0, microsecond=0
-    )
+    first = day_df.index[0]
+    if first.time() != open_t:
+        return None  # data starts late — the true OR high/low is unknowable
+    start = first
     end = start + dt.timedelta(minutes=cfg.or_minutes)
     window = day_df[(day_df.index >= start) & (day_df.index < end)]
-    if window.empty:
-        return None
+    expected = int(round(cfg.or_minutes / bar_min))
+    if window.empty or len(window) < expected:
+        return None  # gaps inside the OR window — range would be unreliable
     return float(window["high"].max()), float(window["low"].min()), end
 
 
 def _exit_levels(direction: str, entry: float, or_high: float, or_low: float, cfg: StrategyConfig, spec: ContractSpec):
-    """Compute (stop, target, risk_points) for a fill at `entry`."""
+    """Compute (stop, target, risk_points) for a fill at `entry`.
+
+    Both levels are snapped to the tick grid pessimistically: the stop is
+    rounded AWAY from entry (never understates risk) and the target TOWARD
+    entry (never overstates reward). `risk_points` is the distance to the
+    rounded stop — the risk a live order at that price would actually carry.
+    """
     rng = or_high - or_low
 
     if cfg.stop_type == "range":
@@ -66,6 +115,12 @@ def _exit_levels(direction: str, entry: float, or_high: float, or_low: float, cf
         raise ValueError(f"unknown stop_type {cfg.stop_type}")
     risk = max(risk, spec.tick_size)  # guard against zero-width stops
 
+    if direction == "long":
+        stop = _floor_to_tick(entry - risk, spec)
+    else:
+        stop = _ceil_to_tick(entry + risk, spec)
+    risk = abs(entry - stop)  # actual risk of the order that would rest live
+
     if cfg.target_type == "r_multiple":
         reward = cfg.r_multiple * risk
     elif cfg.target_type == "fixed":
@@ -76,10 +131,10 @@ def _exit_levels(direction: str, entry: float, or_high: float, or_low: float, cf
         raise ValueError(f"unknown target_type {cfg.target_type}")
 
     if direction == "long":
-        stop, target = entry - risk, entry + reward
+        target = _floor_to_tick(entry + reward, spec)
     else:
-        stop, target = entry + risk, entry - reward
-    return _round_to_tick(stop, spec), _round_to_tick(target, spec), risk
+        target = _ceil_to_tick(entry - reward, spec)
+    return stop, target, risk
 
 
 def _manage_stop(pos: dict, bar, cfg: StrategyConfig, spec: ContractSpec) -> None:
@@ -106,19 +161,61 @@ def _manage_stop(pos: dict, bar, cfg: StrategyConfig, spec: ContractSpec) -> Non
             pos["stop"] = min(pos["stop"], _round_to_tick(bar.low + dist, spec))
 
 
-def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec) -> list[Trade]:
-    sess = session_slice(day_df, cfg.session_open, cfg.session_close)
-    if len(sess) < cfg.or_minutes + 2:
-        return []
+def _resolve_exit(pos: dict, bar, cfg: StrategyConfig, entry_bar: bool = False):
+    """Check one bar against the position's stop/target.
 
-    orr = _opening_range(sess, cfg)
+    Returns (exit_price, exit_reason) or None. When a bar touches both levels
+    the order is unknowable from OHLC, so `conservative_fills` decides (stop
+    first). On non-entry bars a gap through a level fills at the bar's open —
+    stops fill worse, targets fill better, exactly as live orders would.
+    On the entry bar the open precedes the fill, so gap logic doesn't apply.
+    """
+    d = pos["direction"]
+    stop, target = pos["stop"], pos["target"]
+    o = float(bar.open)
+
+    hit_stop = bar.low <= stop if d == "long" else bar.high >= stop
+    hit_target = bar.high >= target if d == "long" else bar.low <= target
+    if not hit_stop and not hit_target:
+        return None
+
+    if hit_stop and hit_target:
+        first = "stop" if cfg.conservative_fills else "target"
+    elif hit_stop:
+        first = "stop"
+    else:
+        first = "target"
+
+    if first == "stop":
+        if entry_bar:
+            px = stop
+        else:
+            px = min(stop, o) if d == "long" else max(stop, o)
+    else:
+        if entry_bar:
+            px = target
+        else:
+            px = max(target, o) if d == "long" else min(target, o)
+    return px, first
+
+
+def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec):
+    """Returns (trades, skip_reason). skip_reason is None for tradeable days."""
+    sess = session_slice(day_df, cfg.session_open, cfg.session_close)
+    if sess.empty:
+        return [], "no_session_bars"
+    bar_min = bar_minutes(sess.index)
+    if len(sess) < (cfg.or_minutes / bar_min) + 2:
+        return [], "short_session"
+
+    orr = _opening_range(sess, cfg, bar_min)
     if orr is None:
-        return []
+        return [], "incomplete_or"
     or_high, or_low, or_end = orr
 
     rng_ticks = (or_high - or_low) / spec.tick_size
     if not (cfg.min_range_ticks <= rng_ticks <= cfg.max_range_ticks):
-        return []
+        return [], "range_filter"
 
     buf = cfg.entry_buffer_ticks * spec.tick_size
     long_trigger = _round_to_tick(or_high + buf, spec)
@@ -127,10 +224,15 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec)
 
     after = sess[sess.index >= or_end]
 
-    # Optional intraday EMA trend filter (computed on the full session, read after OR).
-    ema = None
+    # Optional intraday EMA trend filter. The decision for a stop order working
+    # during bar t can only use information available BEFORE bar t completes,
+    # so the filter compares the PREVIOUS bar's close to the previous bar's EMA.
+    prev_close = prev_ema = None
     if cfg.ema_trend_filter > 0:
-        ema = sess["close"].ewm(span=cfg.ema_trend_filter, adjust=False).mean()
+        closes = sess["close"]
+        ema = closes.ewm(span=cfg.ema_trend_filter, adjust=False).mean()
+        prev_close = closes.shift(1)
+        prev_ema = ema.shift(1)
 
     cutoff = dt.time.fromisoformat(cfg.no_entry_after) if cfg.no_entry_after else None
 
@@ -145,60 +247,83 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec)
 
         # --- manage an open position ---
         if position is not None:
-            d = position["direction"]
-            stop, target = position["stop"], position["target"]
-            hit_stop = bar.low <= stop if d == "long" else bar.high >= stop
-            hit_target = bar.high >= target if d == "long" else bar.low <= target
+            res = _resolve_exit(position, bar, cfg)
+            if res is None and last_of_day and cfg.flatten_at_close:
+                res = (float(bar.close), "close")
 
-            exit_price = exit_reason = None
-            if hit_stop and hit_target:
-                # Ambiguous bar: be conservative unless configured otherwise.
-                if cfg.conservative_fills:
-                    exit_price, exit_reason = stop, "stop"
-                else:
-                    exit_price, exit_reason = target, "target"
-            elif hit_stop:
-                exit_price, exit_reason = stop, "stop"
-            elif hit_target:
-                exit_price, exit_reason = target, "target"
-            elif last_of_day and cfg.flatten_at_close:
-                exit_price, exit_reason = float(bar.close), "close"
-
-            if exit_price is not None:
+            if res is not None:
+                exit_price, exit_reason = res
+                d = position["direction"]
                 # adverse slippage on exit
                 fill = exit_price - slip if d == "long" else exit_price + slip
                 trades.append(_close(position, t, fill, exit_reason, cfg, spec))
                 position = None
                 if not cfg.allow_reentry:
                     n_entries = cfg.max_trades_per_day  # block further entries today
+                # A bar's OHLC can't order prices around the exit, so re-arming
+                # on the SAME bar would trade on pre-exit price action. Wait
+                # for the next bar before looking for a new entry.
+                continue
             else:
                 # Still open: update stop management using THIS bar (affects later bars
                 # only — no intrabar lookahead, since exits were already checked above).
                 _manage_stop(position, bar, cfg, spec)
+                # A stop tightened DURING this bar (breakeven/trailing) is live
+                # from the moment its trigger price prints. If the bar then
+                # closes beyond the new stop, price must have crossed it after
+                # the move — a live stop fills that bar, not on the next one.
+                d = position["direction"]
+                c = float(bar.close)
+                crossed = c <= position["stop"] if d == "long" else c >= position["stop"]
+                if crossed:
+                    fill = position["stop"] - slip if d == "long" else position["stop"] + slip
+                    trades.append(_close(position, t, fill, "stop", cfg, spec))
+                    position = None
+                    if not cfg.allow_reentry:
+                        n_entries = cfg.max_trades_per_day
                 continue  # don't look for new entries while in a position
 
         # --- look for a new entry ---
         if cutoff is not None and t.time() >= cutoff:
             continue  # past the no-new-entries time
 
-        if position is None and n_entries < cfg.max_trades_per_day:
-            ema_val = float(ema.loc[t]) if ema is not None else None
-            long_ok = cfg.direction in ("both", "long") and (ema_val is None or float(bar.close) >= ema_val)
-            short_ok = cfg.direction in ("both", "short") and (ema_val is None or float(bar.close) <= ema_val)
+        if n_entries < cfg.max_trades_per_day:
+            if prev_close is not None:
+                pc, pe = prev_close.loc[t], prev_ema.loc[t]
+                trend_up = pd.notna(pc) and pd.notna(pe) and float(pc) >= float(pe)
+                trend_dn = pd.notna(pc) and pd.notna(pe) and float(pc) <= float(pe)
+            else:
+                trend_up = trend_dn = True
+            long_ok = cfg.direction in ("both", "long") and trend_up
+            short_ok = cfg.direction in ("both", "short") and trend_dn
+
+            o = float(bar.open)
+            long_hit = long_ok and bar.high >= long_trigger
+            short_hit = short_ok and bar.low <= short_trigger
 
             took = None
-            if long_ok and bar.high >= long_trigger:
-                fill = max(long_trigger, float(bar.open)) + slip
-                took = ("long", fill)
-            if took is None and short_ok and bar.low <= short_trigger:
-                fill = min(short_trigger, float(bar.open)) - slip
-                took = ("short", fill)
+            if long_hit and short_hit:
+                # Bar spans both triggers: the open tells us which side was
+                # reached first (or was already through at the open).
+                if o >= long_trigger:
+                    took = "long"
+                elif o <= short_trigger:
+                    took = "short"
+                else:
+                    took = "long" if (long_trigger - o) <= (o - short_trigger) else "short"
+            elif long_hit:
+                took = "long"
+            elif short_hit:
+                took = "short"
 
             if took is not None:
-                d, fill = took
-                stop, target, risk = _exit_levels(d, fill, or_high, or_low, cfg, spec)
+                if took == "long":
+                    fill = max(long_trigger, o) + slip
+                else:
+                    fill = min(short_trigger, o) - slip
+                stop, target, risk = _exit_levels(took, fill, or_high, or_low, cfg, spec)
                 position = {
-                    "direction": d,
+                    "direction": took,
                     "entry_time": t,
                     "entry_price": fill,
                     "stop": stop,
@@ -208,6 +333,20 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec)
                 }
                 n_entries += 1
 
+                # The entry bar's remaining range can hit the stop or target
+                # within the same bar — a live bracket would fill. Check it now.
+                res = _resolve_exit(position, bar, cfg, entry_bar=True)
+                if res is None and last_of_day and cfg.flatten_at_close:
+                    res = (float(bar.close), "close")
+                if res is not None:
+                    exit_price, exit_reason = res
+                    d = position["direction"]
+                    fill_x = exit_price - slip if d == "long" else exit_price + slip
+                    trades.append(_close(position, t, fill_x, exit_reason, cfg, spec))
+                    position = None
+                    if not cfg.allow_reentry:
+                        n_entries = cfg.max_trades_per_day
+
     # Force-close anything still open on the final bar (e.g. no flatten flag edge case).
     if position is not None and bars:
         bar = bars[-1]
@@ -215,7 +354,7 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec)
         fill = float(bar.close) - slip if d == "long" else float(bar.close) + slip
         trades.append(_close(position, bar.Index, fill, "close", cfg, spec))
 
-    return trades
+    return trades, None
 
 
 def _close(pos: dict, t, fill: float, reason: str, cfg: StrategyConfig, spec: ContractSpec) -> Trade:
@@ -240,9 +379,24 @@ def _close(pos: dict, t, fill: float, reason: str, cfg: StrategyConfig, spec: Co
     )
 
 
-def run_backtest(df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec = ES) -> list[Trade]:
-    """Run the ORB strategy over all sessions in `df`. Returns a list of trades."""
+def run_backtest(df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec = ES,
+                 stats: Optional[dict] = None) -> list[Trade]:
+    """Run the ORB strategy over all sessions in `df`. Returns a list of trades.
+
+    Pass a dict as `stats` to learn how many sessions were skipped and why
+    (`incomplete_or`, `short_session`, `range_filter`) — days dropped by data
+    quality are invisible in the trade list, and a backtest that silently ran
+    on half the sessions is not the backtest you think it is.
+    """
     trades: list[Trade] = []
+    if stats is not None:
+        stats.setdefault("sessions", 0)
+        stats.setdefault("skipped", {})
     for _, day_df in df.groupby(df.index.normalize()):
-        trades.extend(_simulate_day(day_df, cfg, spec))
+        day_trades, skip = _simulate_day(day_df, cfg, spec)
+        trades.extend(day_trades)
+        if stats is not None:
+            stats["sessions"] += 1
+            if skip is not None:
+                stats["skipped"][skip] = stats["skipped"].get(skip, 0) + 1
     return trades

@@ -17,14 +17,20 @@ from orb.metrics import summarize, WIN_RATE_GATE
 def main() -> None:
     ap = argparse.ArgumentParser(description="Compare all ORB variants.")
     ap.add_argument("--data", default="data/sample_es.csv")
-    ap.add_argument("--source-tz", default="America/New_York")
+    ap.add_argument("--source-tz", default="UTC", help="tz of raw CSV timestamps (all repo fetchers emit UTC)")
     args = ap.parse_args()
 
     df = load_bars(args.data, source_tz=args.source_tz)
     print(f"\nData: {args.data}  ({df.index[0].date()} -> {df.index[-1].date()}, {len(df):,} bars)")
     print(f"Win-rate gate for live eligibility: {WIN_RATE_GATE*100:.0f}%\n")
 
-    results = [summarize(cfg.name, run_backtest(df, cfg)) for cfg in VARIANTS]
+    stats: dict = {}
+    results = [summarize(cfg.name, run_backtest(df, cfg, stats=stats if i == 0 else None))
+               for i, cfg in enumerate(VARIANTS)]
+    if stats.get("skipped"):
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(stats["skipped"].items()))
+        print(f"NOTE ({VARIANTS[0].name}): {sum(stats['skipped'].values())}/{stats['sessions']} "
+              f"sessions skipped ({detail}) — data-quality holes, not strategy decisions.\n")
     results.sort(key=lambda m: (m.passes_gate, m.win_rate, m.net_usd), reverse=True)
 
     for m in results:

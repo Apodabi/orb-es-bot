@@ -1,8 +1,13 @@
 """In-sample / out-of-sample validation of the predefined VARIANTS.
 
-Picks the best variant on the in-sample period, then reports how it holds up
-out-of-sample. A variant is only "robust" if it clears the 60% win-rate gate AND
-stays net-positive on BOTH periods — the bar for promoting anything to live.
+Selection is IN-SAMPLE ONLY: the variants are ranked on the in-sample period,
+and a single winner is chosen there. Only that pre-committed pick is then
+evaluated out-of-sample — giving every variant a shot at the holdout and
+keeping whichever looks best is just curve-fitting with extra steps (10
+variants x one holdout = 10 lottery tickets).
+
+The pick is "live-eligible" only if it clears the 60% win-rate gate AND stays
+net-positive on BOTH periods with enough trades to mean anything.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ from orb.metrics import summarize, WIN_RATE_GATE
 def main() -> None:
     ap = argparse.ArgumentParser(description="IS/OOS validation of predefined variants.")
     ap.add_argument("--data", default="data/sample_es.csv")
-    ap.add_argument("--source-tz", default="America/New_York")
+    ap.add_argument("--source-tz", default="UTC", help="tz of raw CSV timestamps (all repo fetchers emit UTC)")
     ap.add_argument("--train-frac", type=float, default=0.7)
     ap.add_argument("--min-trades", type=int, default=20)
     args = ap.parse_args()
@@ -34,34 +39,41 @@ def main() -> None:
     print(f"  out-of-sample: {oos_df.index[0].date()} -> {oos_df.index[-1].date()}")
     print(f"  gate: {WIN_RATE_GATE*100:.0f}% win rate + net-positive on BOTH periods\n")
 
-    rows = []
-    for cfg in VARIANTS:
-        m_is = summarize(cfg.name, run_backtest(is_df, cfg))
-        m_oos = summarize(cfg.name, run_backtest(oos_df, cfg))
-        robust = (
-            m_is.passes_gate and m_oos.passes_gate
-            and m_is.net_usd > 0 and m_oos.net_usd > 0
-            and m_is.n_trades >= args.min_trades and m_oos.n_trades >= args.min_trades
-        )
-        rows.append((cfg.name, m_is, m_oos, robust))
+    # 1) Rank every variant on the in-sample period only.
+    is_rows = [(cfg, summarize(cfg.name, run_backtest(is_df, cfg))) for cfg in VARIANTS]
+    is_rows.sort(key=lambda r: r[1].expectancy_usd, reverse=True)
 
-    # Rank by in-sample expectancy (what you'd actually select on).
-    rows.sort(key=lambda r: r[1].expectancy_usd, reverse=True)
+    print("In-sample ranking (selection happens HERE, before touching the holdout):")
+    print(f"{'variant':<28} {'IS win':>7} {'IS net':>10} {'IS n':>5}  IS-eligible")
+    eligible = []
+    for cfg, m in is_rows:
+        ok = m.passes_gate and m.net_usd > 0 and m.n_trades >= args.min_trades
+        if ok:
+            eligible.append((cfg, m))
+        print(f"{m.name:<28} {m.win_rate*100:>6.1f}% {m.net_usd:>10,.0f} {m.n_trades:>5}  {'YES' if ok else '-'}")
 
-    print(f"{'variant':<28} {'IS win':>7} {'IS net':>10} {'OOS win':>8} {'OOS net':>10}  robust")
-    for name, m_is, m_oos, robust in rows:
-        print(
-            f"{name:<28} {m_is.win_rate*100:>6.1f}% {m_is.net_usd:>10,.0f} "
-            f"{m_oos.win_rate*100:>7.1f}% {m_oos.net_usd:>10,.0f}  "
-            f"{'YES' if robust else '-'}"
-        )
-
-    robust_names = [name for name, *_ , r in rows if r]
     print()
-    if robust_names:
-        print("Live-eligible (robust IS+OOS):", ", ".join(robust_names))
+    if not eligible:
+        print("No variant is IS-eligible; the out-of-sample period was NOT evaluated")
+        print("(preserving the holdout for a future run). Do NOT go live.")
+        return
+
+    # 2) Evaluate ONLY the pre-committed top pick on the holdout.
+    pick_cfg, m_is = eligible[0]
+    m_oos = summarize(pick_cfg.name, run_backtest(oos_df, pick_cfg))
+    robust = (
+        m_oos.passes_gate and m_oos.net_usd > 0 and m_oos.n_trades >= args.min_trades
+    )
+    print(f"Selected on IS: {pick_cfg.name}  (the ONLY variant tested out-of-sample)")
+    print(f"  OOS: win={m_oos.win_rate*100:.1f}%  net=${m_oos.net_usd:,.0f}  n={m_oos.n_trades}")
+    print()
+    if robust:
+        print(f"Live-eligible (robust IS+OOS): {pick_cfg.name}")
     else:
-        print("No variant is robust across IS and OOS. Do NOT go live.")
+        print(f"{pick_cfg.name} failed out-of-sample. Do NOT go live.")
+        print("NOTE: the holdout has now been consumed by this variant. Re-running "
+              "validation with tweaked variants against the same data overfits the "
+              "holdout — fetch fresh data before validating again.")
 
 
 if __name__ == "__main__":

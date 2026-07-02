@@ -19,20 +19,31 @@ from orb.metrics import summarize
 def main() -> None:
     ap = argparse.ArgumentParser(description="Backtest one ORB variant.")
     ap.add_argument("--data", default="data/sample_es.csv")
-    ap.add_argument("--source-tz", default="America/New_York", help="tz of raw timestamps (UTC for IBKR exports)")
+    ap.add_argument("--source-tz", default="UTC", help="tz of raw CSV timestamps (all repo fetchers emit UTC)")
     ap.add_argument("--variant", default=None, help="variant name from config.VARIANTS (default: first)")
     ap.add_argument("--trades", action="store_true", help="print the full trade log")
     args = ap.parse_args()
 
-    cfg = next((v for v in VARIANTS if v.name == args.variant), VARIANTS[0]) if args.variant else VARIANTS[0]
+    if args.variant:
+        cfg = next((v for v in VARIANTS if v.name == args.variant), None)
+        if cfg is None:
+            names = ", ".join(v.name for v in VARIANTS)
+            sys.exit(f"error: unknown variant {args.variant!r}. Valid names: {names}")
+    else:
+        cfg = VARIANTS[0]
 
     df = load_bars(args.data, source_tz=args.source_tz)
-    trades = run_backtest(df, cfg)
+    stats: dict = {}
+    trades = run_backtest(df, cfg, stats=stats)
     m = summarize(cfg.name, trades)
 
     print(f"\nData: {args.data}  ({df.index[0].date()} -> {df.index[-1].date()}, {len(df):,} bars)")
     print(f"Variant: {cfg.name}\n")
     print(m.line())
+    if stats.get("skipped"):
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(stats["skipped"].items()))
+        print(f"NOTE: {sum(stats['skipped'].values())}/{stats['sessions']} sessions "
+              f"skipped ({detail}) — data-quality holes, not strategy decisions.")
 
     if args.trades:
         print("\nday         dir    entry     exit   reason     R     pnl$")

@@ -11,6 +11,8 @@ import argparse
 import datetime as dt
 import math
 import random
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -36,7 +38,7 @@ def gen(days: int, seed: int, start_price: float) -> pd.DataFrame:
             vol = rng.uniform(0.4, 1.2)
             t = dt.datetime.combine(day, ET_OPEN)
             end = dt.datetime.combine(day, ET_CLOSE)
-            while t <= end:
+            while t < end:  # last RTH bar is 15:59; a 16:00 bar would be post-close
                 step = rng.gauss(drift, vol)
                 o = price
                 c = price + step
@@ -69,6 +71,13 @@ def main() -> None:
     args = ap.parse_args()
 
     df = gen(args.days, args.seed, args.start)
+    # Emit UTC like every real fetcher does, so ALL data files in this repo
+    # share one timestamp convention and --source-tz can default to UTC.
+    ts = (pd.to_datetime(df["timestamp"])
+          .dt.tz_localize(ZoneInfo("America/New_York"))
+          .dt.tz_convert("UTC").dt.tz_localize(None))
+    df["timestamp"] = ts.dt.strftime("%Y-%m-%d %H:%M:%S")
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.out, index=False)
     print(f"wrote {len(df):,} synthetic bars over {args.days} sessions -> {args.out}")
     print("NOTE: synthetic data — for plumbing only, not edge validation.")
