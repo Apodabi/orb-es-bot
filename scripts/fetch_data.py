@@ -23,6 +23,7 @@ from orb.ibkr import fetch_es_bars, fetch_es_stitched, save_csv
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Fetch ES historical bars from IBKR.")
+    ap.add_argument("--symbol", default="ES", choices=["ES", "NQ"], help="instrument (same CME quarterly cycle)")
     ap.add_argument("--start", default=None, help="YYYY-MM-DD: stitched, roll-correct fetch from this date")
     ap.add_argument("--end", default="", help='stitched mode: YYYY-MM-DD (default today); single mode: IBKR endDateTime, e.g. "20240920 16:00:00 US/Eastern"')
     ap.add_argument("--expiry", default=None, help='single-contract month, e.g. "202409"')
@@ -43,6 +44,7 @@ def main() -> None:
             roll_days=args.roll_days,
             port=args.port,
             allow_gaps=args.allow_gaps,
+            symbol=args.symbol,
         )
     else:
         try:
@@ -59,6 +61,7 @@ def main() -> None:
             bar_size=args.bar_size,
             expiry=args.expiry,
             port=args.port,
+            symbol=args.symbol,
         )
     save_csv(df, args.out)
     print(f"saved {len(df):,} bars -> {args.out}")

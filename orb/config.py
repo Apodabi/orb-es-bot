@@ -7,11 +7,17 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ContractSpec:
-    """Spec for the instrument being traded."""
+    """Spec for the instrument being traded.
+
+    `commission_per_side` is the all-in per-contract cost (broker commission +
+    exchange + NFA/clearing) per IBKR's published schedule; runners override
+    StrategyConfig.commission_per_side from here when trading the instrument.
+    """
 
     symbol: str = "ES"
     tick_size: float = 0.25            # minimum price increment, in index points
     point_value: float = 50.0          # USD per 1.00 index point per contract
+    commission_per_side: float = 2.50  # all-in USD per contract per side
 
     @property
     def tick_value(self) -> float:
@@ -22,7 +28,14 @@ class ContractSpec:
 ES = ContractSpec()
 
 # Micro E-mini: same tick grid, 1/10th the dollar value — the sane first live step.
-MES = ContractSpec(symbol="MES", tick_size=0.25, point_value=5.0)
+MES = ContractSpec(symbol="MES", tick_size=0.25, point_value=5.0, commission_per_side=0.62)
+
+# E-mini Nasdaq-100: same 0.25 tick grid, $20/point ($5/tick). All-in cost per
+# IBKR schedule (2026-07): $0.85 commission + ~$1.60 exchange/NFA = ~$2.45/side.
+NQ = ContractSpec(symbol="NQ", tick_size=0.25, point_value=20.0, commission_per_side=2.45)
+
+# Micro E-mini Nasdaq-100 (reference only this round): $2/point, ~$0.62/side all-in.
+MNQ = ContractSpec(symbol="MNQ", tick_size=0.25, point_value=2.0, commission_per_side=0.62)
 
 
 @dataclass

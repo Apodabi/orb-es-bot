@@ -62,7 +62,7 @@ def quarterly_contracts(start: dt.date, end: dt.date, roll_days: int = 8):
     return out
 
 
-def _qualified_es(ib, expiry: str | None, exchange: str = "CME"):
+def _qualified_es(ib, expiry: str | None, exchange: str = "CME", symbol: str = "ES"):
     """Return a fully qualified ES contract.
 
     With `expiry` set (e.g. "202409" or "20240920"), qualifies that specific
@@ -74,22 +74,22 @@ def _qualified_es(ib, expiry: str | None, exchange: str = "CME"):
     from ib_insync import Future
 
     if expiry:
-        contract = Future(symbol="ES", exchange=exchange, currency="USD",
+        contract = Future(symbol=symbol, exchange=exchange, currency="USD",
                           lastTradeDateOrContractMonth=expiry, includeExpired=True)
         qualified = ib.qualifyContracts(contract)
         if not qualified:
-            raise RuntimeError(f"IBKR could not qualify ES contract for expiry {expiry!r}.")
+            raise RuntimeError(f"IBKR could not qualify {symbol} contract for expiry {expiry!r}.")
         return qualified[0]
 
-    details = ib.reqContractDetails(Future(symbol="ES", exchange=exchange, currency="USD"))
+    details = ib.reqContractDetails(Future(symbol=symbol, exchange=exchange, currency="USD"))
     if not details:
-        raise RuntimeError("IBKR returned no ES contract details — check market data permissions.")
+        raise RuntimeError(f"IBKR returned no {symbol} contract details — check market data permissions.")
     today = dt.date.today().strftime("%Y%m%d")
     contracts = sorted((d.contract for d in details),
                        key=lambda c: c.lastTradeDateOrContractMonth)
     front = next((c for c in contracts if c.lastTradeDateOrContractMonth >= today),
                  contracts[-1])
-    print(f"resolved front month: ES {front.lastTradeDateOrContractMonth}")
+    print(f"resolved front month: {symbol} {front.lastTradeDateOrContractMonth}")
     return front
 
 
@@ -171,8 +171,9 @@ def fetch_es_bars(
     what_to_show: str = "TRADES",
     use_rth: bool = False,
     timeout: float = DEFAULT_TIMEOUT,
+    symbol: str = "ES",
 ) -> pd.DataFrame:
-    """Pull ES bars for ONE contract from IBKR; returns a UTC OHLCV frame.
+    """Pull bars for ONE contract from IBKR; returns a UTC OHLCV frame.
 
     `expiry` is the contract month, e.g. "202409" or "20240920"; None resolves
     the front month explicitly. `use_rth=False` keeps the full electronic
@@ -187,7 +188,7 @@ def fetch_es_bars(
     ib = IB()
     ib.connect(host, port, clientId=client_id)
     try:
-        contract = _qualified_es(ib, expiry)
+        contract = _qualified_es(ib, expiry, symbol=symbol)
         bars = _fetch_history(ib, contract, end, duration, bar_size,
                               what_to_show, use_rth, timeout)
     finally:
@@ -213,6 +214,7 @@ def fetch_es_stitched(
     use_rth: bool = False,
     timeout: float = DEFAULT_TIMEOUT,
     allow_gaps: bool = False,
+    symbol: str = "ES",
 ) -> pd.DataFrame:
     """Roll-correct ES history from `start` to `end` (dates as YYYY-MM-DD).
 
@@ -246,7 +248,7 @@ def fetch_es_stitched(
     frames = []
     try:
         for month_code, win_start, win_end in windows:
-            contract = _qualified_es(ib, month_code)
+            contract = _qualified_es(ib, month_code, symbol=symbol)
             span_days = (win_end - win_start).days + 1
             # endDateTime just past the window end (UTC midnight after win_end)
             end_dt = dt.datetime.combine(win_end + dt.timedelta(days=1),
@@ -255,11 +257,11 @@ def fetch_es_stitched(
                                   bar_size, what_to_show, use_rth, timeout)
             if not bars:
                 if allow_gaps:
-                    print(f"  WARNING: no bars for ES {month_code} "
+                    print(f"  WARNING: no bars for {symbol} {month_code} "
                           f"({win_start} -> {win_end}) — window skipped (--allow-gaps)")
                     continue
                 raise RuntimeError(
-                    f"no bars for ES {month_code} ({win_start} -> {win_end}). "
+                    f"no bars for {symbol} {month_code} ({win_start} -> {win_end}). "
                     "A stitched dataset silently missing a quarter would corrupt "
                     "the backtest. Retry, or pass allow_gaps/--allow-gaps to "
                     "accept the hole knowingly."
@@ -276,7 +278,7 @@ def fetch_es_stitched(
             hi = pd.Timestamp(dt.datetime.combine(win_end - dt.timedelta(days=1),
                                                   dt.time(17, 0)), tz=et)
             df = df[(ts >= lo) & (ts < hi)]
-            print(f"  ES {month_code}: {len(df):,} bars for {win_start} -> {win_end}")
+            print(f"  {symbol} {month_code}: {len(df):,} bars for {win_start} -> {win_end}")
             frames.append(df)
     finally:
         ib.disconnect()
