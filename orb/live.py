@@ -137,6 +137,16 @@ class OrbSessionEngine:
                 "support with replay parity must be built BEFORE such a variant may be "
                 "paper traded."
             )
+        if (cfg.confirm_closes > 0 or cfg.confirm_beyond_ticks > 0
+                or cfg.or_pctile_min > 0 or cfg.or_pctile_max < 100
+                or cfg.max_hold_minutes > 0 or cfg.exit_at_time
+                or cfg.target_type == "none"):
+            raise NotImplementedError(
+                "round-3 features (follow-through entries, band filter, time exits, "
+                "target='none') are backtest-only this round. Per ROUND3_PREREG.md "
+                "hard boundary 1, the executor stays idle; live support with replay "
+                "parity must be built before any such variant may be paper traded."
+            )
         self.cfg = cfg
         self.spec = spec
         self.bar_min = bar_min

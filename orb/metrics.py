@@ -135,6 +135,7 @@ def profit_gate(
     strip_days: int = 5,
     month_cap: float = 0.40,
     dd_mult: float = 1.5,
+    benchmark_usd: float | None = None,
 ) -> GateReport:
     """Evaluate the six-criterion round-2 profit gate on a list of trades.
 
@@ -185,6 +186,10 @@ def profit_gate(
         "e": max_month_frac <= month_cap,
         "f": net > 0 and mdd < dd_mult * annualized,
     }
+    if benchmark_usd is not None:
+        # round-3 benchmark alpha (ROUND3_PREREG.md §c): beat naive long-at-open
+        # flat-at-close on the same days, at the same costs
+        criteria["g"] = net > benchmark_usd
     return GateReport(
         name=name,
         n_trades=len(trades),

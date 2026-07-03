@@ -90,6 +90,15 @@ class StrategyConfig:
     atr_days: int = 14
     atr_lookback: int = 60             # needs >= 30 prior ATR observations before any day can trade
 
+    # --- round-3 features (research/ROUND3_PREREG.md §b; all off by default) ---
+    confirm_closes: int = 0            # 0 = off; N consecutive closes beyond the OR, then enter at the NEXT bar's open
+    confirm_beyond_ticks: int = 0      # 0 = off; one close >= OR-high + N ticks (<= OR-low - N), then enter next open
+    or_pctile_min: float = 0.0         # band regime filter: today's OR percentile within the trailing
+    or_pctile_max: float = 100.0       #   `or_median_days` ORs must sit inside [min, max] (active when narrowed)
+    max_hold_minutes: int = 0          # 0 = off; exit at the OPEN of the first bar starting >= entry + N minutes
+    exit_at_time: str = ""             # "" = off; e.g. "12:00" exits at that ET bar's open (reason "time")
+    # target_type may also be "none": no profit target (stop/management stay active)
+
     # --- in-trade stop management (option 3) ---
     breakeven_at_r: float = 0.0        # 0 = off; move stop to entry once price reaches this R
     trailing_stop_ticks: int = 0       # 0 = off; trail stop this many ticks behind the best price
@@ -165,4 +174,51 @@ ROUND2_FAMILIES = {
     "H2": ["R2-H2a-be1-bigOR", "R2-H2b-trail-bigOR", "R2-H2c-trail-atr50",
            "R2-H2d-be1-bigOR125", "R2-H2e-triple"],
     "H3": ["R2-H3a-be1-vwap", "R2-H3b-trail-vwap", "R2-H3c-OR45-vwap"],
+}
+
+
+# ---------------------------------------------------------------------------
+# Round-3 pre-registered hypothesis set (research/ROUND3_PREREG.md §b) — NQ.
+# Base management shape from round 2's most durable loser: range stop,
+# breakeven at 1R, 40-tick trail, 2R target (unless the variant says otherwise).
+# The round-3 runner forces slippage_ticks=2.0 and the NQ all-in commission.
+# ---------------------------------------------------------------------------
+
+ROUND3_VARIANTS = [
+    # H1 — follow-through conditioning (entries were buying exhaustion)
+    StrategyConfig(name="R3-H1a-cc2", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40, confirm_closes=2),
+    StrategyConfig(name="R3-H1b-cc3", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40, confirm_closes=3),
+    StrategyConfig(name="R3-H1c-cb8", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40, confirm_beyond_ticks=8),
+    StrategyConfig(name="R3-H1d-cc2-3R", stop_type="fraction", stop_fraction=0.5,
+                   r_multiple=3.0, breakeven_at_r=1.0, trailing_stop_ticks=60,
+                   confirm_closes=2),
+    # H2 — band regime filter (chop kills AND chaos kills; trade the middle)
+    StrategyConfig(name="R3-H2a-band", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40, or_pctile_min=30.0, or_pctile_max=70.0),
+    StrategyConfig(name="R3-H2b-band-cc2", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40, or_pctile_min=30.0, or_pctile_max=70.0,
+                   confirm_closes=2),
+    StrategyConfig(name="R3-H2c-bandwide", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40, or_pctile_min=20.0, or_pctile_max=80.0),
+    StrategyConfig(name="R3-H2d-band-3R", stop_type="fraction", stop_fraction=0.5,
+                   r_multiple=3.0, breakeven_at_r=1.0, trailing_stop_ticks=60,
+                   or_pctile_min=30.0, or_pctile_max=70.0),
+    # H3 — time-based exits (maybe exit geometry, not entry, was the failure)
+    StrategyConfig(name="R3-H3a-t120", target_type="none", breakeven_at_r=1.0,
+                   max_hold_minutes=120),
+    StrategyConfig(name="R3-H3b-noon", target_type="none", breakeven_at_r=1.0,
+                   exit_at_time="12:00"),
+    StrategyConfig(name="R3-H3c-t120-cc2", target_type="none", breakeven_at_r=1.0,
+                   max_hold_minutes=120, confirm_closes=2),
+    StrategyConfig(name="R3-H3d-noon-band", target_type="none", breakeven_at_r=1.0,
+                   exit_at_time="12:00", or_pctile_min=30.0, or_pctile_max=70.0),
+]
+
+ROUND3_FAMILIES = {
+    "H1": ["R3-H1a-cc2", "R3-H1b-cc3", "R3-H1c-cb8", "R3-H1d-cc2-3R"],
+    "H2": ["R3-H2a-band", "R3-H2b-band-cc2", "R3-H2c-bandwide", "R3-H2d-band-3R"],
+    "H3": ["R3-H3a-t120", "R3-H3b-noon", "R3-H3c-t120-cc2", "R3-H3d-noon-band"],
 }

@@ -124,6 +124,9 @@ def _exit_levels(direction: str, entry: float, or_high: float, or_low: float, cf
         stop = _ceil_to_tick(entry + risk, spec)
     risk = abs(entry - stop)  # actual risk of the order that would rest live
 
+    if cfg.target_type == "none":
+        return stop, None, risk  # no profit target; stop/management still apply
+
     if cfg.target_type == "r_multiple":
         reward = cfg.r_multiple * risk
     elif cfg.target_type == "fixed":
@@ -178,7 +181,8 @@ def _resolve_exit(pos: dict, bar, cfg: StrategyConfig, entry_bar: bool = False):
     o = float(bar.open)
 
     hit_stop = bar.low <= stop if d == "long" else bar.high >= stop
-    hit_target = bar.high >= target if d == "long" else bar.low <= target
+    hit_target = (target is not None
+                  and (bar.high >= target if d == "long" else bar.low <= target))
     if not hit_stop and not hit_target:
         return None
 
@@ -235,31 +239,92 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec,
     # bar t can only use information available BEFORE bar t completes, so every
     # filter compares the PREVIOUS bar's close to the previous bar's indicator.
     prev_close = prev_ema = prev_vwap = None
+    ema_series = vwap_series = None
     if cfg.ema_trend_filter > 0 or cfg.vwap_filter:
         prev_close = sess["close"].shift(1)
     if cfg.ema_trend_filter > 0:
-        ema = sess["close"].ewm(span=cfg.ema_trend_filter, adjust=False).mean()
-        prev_ema = ema.shift(1)
+        ema_series = sess["close"].ewm(span=cfg.ema_trend_filter, adjust=False).mean()
+        prev_ema = ema_series.shift(1)
     if cfg.vwap_filter:
         if "volume" not in sess.columns:
             raise ValueError("vwap_filter=True requires a volume column in the data")
         tp = (sess["high"] + sess["low"] + sess["close"]) / 3.0
-        vwap = (tp * sess["volume"]).cumsum() / sess["volume"].cumsum()
-        prev_vwap = vwap.shift(1)
+        vwap_series = (tp * sess["volume"]).cumsum() / sess["volume"].cumsum()
+        prev_vwap = vwap_series.shift(1)
 
     cutoff = dt.time.fromisoformat(cfg.no_entry_after) if cfg.no_entry_after else None
+    exit_t = dt.time.fromisoformat(cfg.exit_at_time) if cfg.exit_at_time else None
 
     trades: list[Trade] = []
     position: Optional[dict] = None
     n_entries = 0
 
     bars = list(after.itertuples())  # (Index, open, high, low, close, [volume])
+
+    # Follow-through conditioning (ROUND3_PREREG.md §b): instead of first-touch
+    # stop entries, require N consecutive closes beyond the OR (or one close
+    # beyond OR +/- confirm_beyond_ticks). The decision is made at a completed
+    # bar's CLOSE (fully formed — no lookahead); the fill is the NEXT bar's
+    # open, like the market order a live engine would send after the close.
+    confirm_mode = cfg.confirm_closes > 0 or cfg.confirm_beyond_ticks > 0
+    pending_dir: dict = {}
+    if confirm_mode:
+        cu = cd = 0
+        cbuf = cfg.confirm_beyond_ticks * spec.tick_size
+        for i, bar in enumerate(bars):
+            c = float(bar.close)
+            if c > or_high:
+                cu, cd = cu + 1, 0
+            elif c < or_low:
+                cd, cu = cd + 1, 0
+            else:
+                cu = cd = 0  # a close back inside the range resets the count
+            met = None
+            if cfg.confirm_closes > 0:
+                if cu >= cfg.confirm_closes:
+                    met = "long"
+                elif cd >= cfg.confirm_closes:
+                    met = "short"
+            if met is None and cfg.confirm_beyond_ticks > 0:
+                if c >= or_high + cbuf:
+                    met = "long"
+                elif c <= or_low - cbuf:
+                    met = "short"
+            if met is None or cfg.direction not in ("both", met):
+                continue
+            t_i = bar.Index  # side filters, evaluated at the confirming close
+            if ema_series is not None:
+                e = float(ema_series.loc[t_i])
+                if (met == "long" and c < e) or (met == "short" and c > e):
+                    continue
+            if vwap_series is not None:
+                v = vwap_series.loc[t_i]
+                if pd.isna(v) or (met == "long" and c < float(v)) \
+                        or (met == "short" and c > float(v)):
+                    continue
+            pending_dir[i + 1] = met
     for i, bar in enumerate(bars):
         t = bar.Index
         last_of_day = i == len(bars) - 1
 
         # --- manage an open position ---
         if position is not None:
+            # Time exits fire as market orders at the bar's open, ahead of any
+            # intrabar stop/target fill on the same bar.
+            time_due = (
+                (cfg.max_hold_minutes > 0
+                 and t >= position["entry_time"] + dt.timedelta(minutes=cfg.max_hold_minutes))
+                or (exit_t is not None and t.time() >= exit_t)
+            )
+            if time_due:
+                d = position["direction"]
+                fill = float(bar.open) - slip if d == "long" else float(bar.open) + slip
+                trades.append(_close(position, t, fill, "time", cfg, spec))
+                position = None
+                if not cfg.allow_reentry:
+                    n_entries = cfg.max_trades_per_day
+                continue
+
             res = _resolve_exit(position, bar, cfg)
             if res is None and last_of_day and cfg.flatten_at_close:
                 res = (float(bar.close), "close")
@@ -301,46 +366,54 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec,
             continue  # past the no-new-entries time
 
         if n_entries < cfg.max_trades_per_day:
-            trend_up = trend_dn = True
-            if prev_close is not None:
-                pc = prev_close.loc[t]
-                if prev_ema is not None:
-                    pe = prev_ema.loc[t]
-                    ok = pd.notna(pc) and pd.notna(pe)
-                    trend_up = trend_up and ok and float(pc) >= float(pe)
-                    trend_dn = trend_dn and ok and float(pc) <= float(pe)
-                if prev_vwap is not None:
-                    pv = prev_vwap.loc[t]
-                    ok = pd.notna(pc) and pd.notna(pv)
-                    trend_up = trend_up and ok and float(pc) >= float(pv)
-                    trend_dn = trend_dn and ok and float(pc) <= float(pv)
-            long_ok = cfg.direction in ("both", "long") and trend_up
-            short_ok = cfg.direction in ("both", "short") and trend_dn
-
             o = float(bar.open)
-            long_hit = long_ok and bar.high >= long_trigger
-            short_hit = short_ok and bar.low <= short_trigger
-
             took = None
-            if long_hit and short_hit:
-                # Bar spans both triggers: the open tells us which side was
-                # reached first (or was already through at the open).
-                if o >= long_trigger:
+            fill = None
+            if confirm_mode:
+                # market order sent after the confirming close fills at this open
+                took = pending_dir.get(i)
+                if took is not None:
+                    fill = o + slip if took == "long" else o - slip
+            else:
+                trend_up = trend_dn = True
+                if prev_close is not None:
+                    pc = prev_close.loc[t]
+                    if prev_ema is not None:
+                        pe = prev_ema.loc[t]
+                        ok = pd.notna(pc) and pd.notna(pe)
+                        trend_up = trend_up and ok and float(pc) >= float(pe)
+                        trend_dn = trend_dn and ok and float(pc) <= float(pe)
+                    if prev_vwap is not None:
+                        pv = prev_vwap.loc[t]
+                        ok = pd.notna(pc) and pd.notna(pv)
+                        trend_up = trend_up and ok and float(pc) >= float(pv)
+                        trend_dn = trend_dn and ok and float(pc) <= float(pv)
+                long_ok = cfg.direction in ("both", "long") and trend_up
+                short_ok = cfg.direction in ("both", "short") and trend_dn
+
+                long_hit = long_ok and bar.high >= long_trigger
+                short_hit = short_ok and bar.low <= short_trigger
+
+                if long_hit and short_hit:
+                    # Bar spans both triggers: the open tells us which side was
+                    # reached first (or was already through at the open).
+                    if o >= long_trigger:
+                        took = "long"
+                    elif o <= short_trigger:
+                        took = "short"
+                    else:
+                        took = "long" if (long_trigger - o) <= (o - short_trigger) else "short"
+                elif long_hit:
                     took = "long"
-                elif o <= short_trigger:
+                elif short_hit:
                     took = "short"
-                else:
-                    took = "long" if (long_trigger - o) <= (o - short_trigger) else "short"
-            elif long_hit:
-                took = "long"
-            elif short_hit:
-                took = "short"
 
             if took is not None:
-                if took == "long":
-                    fill = max(long_trigger, o) + slip
-                else:
-                    fill = min(short_trigger, o) - slip
+                if fill is None:
+                    if took == "long":
+                        fill = max(long_trigger, o) + slip
+                    else:
+                        fill = min(short_trigger, o) - slip
                 stop, target, risk = _exit_levels(took, fill, or_high, or_low, cfg, spec)
                 position = {
                     "direction": took,
@@ -412,6 +485,7 @@ def _day_context(df: pd.DataFrame, cfg: StrategyConfig) -> dict:
     """
     need_or = cfg.min_or_vs_median > 0
     need_atr = cfg.min_atr_percentile > 0
+    need_band = cfg.or_pctile_min > 0 or cfg.or_pctile_max < 100
     ctx: dict = {}
     or_hist: list[float] = []
     tr_hist: list[float] = []
@@ -430,6 +504,14 @@ def _day_context(df: pd.DataFrame, cfg: StrategyConfig) -> dict:
             window = or_hist[-cfg.or_median_days:]
             ok = ok and (len(window) >= cfg.or_median_days and or_size is not None
                          and or_size >= cfg.min_or_vs_median * statistics.median(window))
+        if need_band:
+            # today's OR percentile (inclusive rank) among the trailing priors
+            window = or_hist[-cfg.or_median_days:]
+            if len(window) >= cfg.or_median_days and or_size is not None:
+                pct = 100.0 * sum(1 for x in window if x <= or_size) / len(window)
+                ok = ok and (cfg.or_pctile_min <= pct <= cfg.or_pctile_max)
+            else:
+                ok = False
         if need_atr:
             # minimum history is on the TOTAL count; the rank window is the slice
             if len(atr_hist) >= MIN_ATR_OBS:
@@ -469,7 +551,8 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec = ES,
     if stats is not None:
         stats.setdefault("sessions", 0)
         stats.setdefault("skipped", {})
-    needs_ctx = cfg.min_or_vs_median > 0 or cfg.min_atr_percentile > 0
+    needs_ctx = (cfg.min_or_vs_median > 0 or cfg.min_atr_percentile > 0
+                 or cfg.or_pctile_min > 0 or cfg.or_pctile_max < 100)
     ctx = _day_context(df, cfg) if needs_ctx else None
     for day, day_df in df.groupby(df.index.normalize()):
         regime_ok = True if ctx is None else bool(ctx.get(day, False))
