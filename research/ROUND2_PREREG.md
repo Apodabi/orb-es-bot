@@ -173,3 +173,9 @@ gate, or split decision changed.
   prints with continuation). Accepted as REAL market history and deliberately
   retained in the holdout — sanitizing them would bias the test in our favor.
 No other integrity failures remain; roll stitches verified clean (0 bad-stitch).
+
+**2026-07-03 — HOLDOUT CONSUMED.** One look, three pre-committed picks, zero
+passed the profit gate (H1b: -$3,360 PF 0.84; H2a: -$9,712 PF 0.78; H3b:
+-$1,322 PF 0.93). Per §5: near-misses reported descriptively, lessons logged,
+round-three hypotheses proposed WITHOUT testing. This dataset joins 2025-07 ->
+2026-06 as consumed forever.
