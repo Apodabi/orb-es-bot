@@ -11,3 +11,6 @@ venv/
 data/*.csv
 data/*.json
 !data/.gitkeep
+
+# local Claude Code session dirs
+.claude/
