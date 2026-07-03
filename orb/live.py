@@ -102,6 +102,7 @@ class Bar:
     high: float
     low: float
     close: float
+    volume: float = 0.0
 
     @property
     def Index(self):  # so backtest helpers that read bar.Index keep working
@@ -129,6 +130,13 @@ class OrbSessionEngine:
     """
 
     def __init__(self, cfg: StrategyConfig, spec: ContractSpec = ES, bar_min: float = 1.0):
+        if cfg.min_or_vs_median > 0 or cfg.min_atr_percentile > 0:
+            raise NotImplementedError(
+                "cross-day filters (min_or_vs_median / min_atr_percentile) are not yet "
+                "supported by the live engine. Per research/ROUND2_PREREG.md §7, live "
+                "support with replay parity must be built BEFORE such a variant may be "
+                "paper traded."
+            )
         self.cfg = cfg
         self.spec = spec
         self.bar_min = bar_min
@@ -152,6 +160,9 @@ class OrbSessionEngine:
         self.n_entries = 0
         self.ema: Optional[float] = None
         self.prev_close: Optional[float] = None
+        self.cum_v = 0.0
+        self.cum_tpv = 0.0
+        self.vwap: Optional[float] = None
         self.long_active = self.short_active = True
         self.entries_working = False
 
@@ -175,25 +186,36 @@ class OrbSessionEngine:
         return True
 
     def _sides(self) -> tuple[bool, bool]:
-        """Long/short permission for the NEXT bar (prev-close vs prev-EMA)."""
+        """Long/short permission for the NEXT bar (previous-bar indicator values,
+        exactly like the backtester — no intrabar lookahead)."""
         cfg = self.cfg
+        trend_up = trend_dn = True
         if cfg.ema_trend_filter > 0:
             if self.prev_close is None or self.ema is None:
                 trend_up = trend_dn = False
             else:
-                trend_up = self.prev_close >= self.ema
-                trend_dn = self.prev_close <= self.ema
-        else:
-            trend_up = trend_dn = True
+                trend_up = trend_up and self.prev_close >= self.ema
+                trend_dn = trend_dn and self.prev_close <= self.ema
+        if cfg.vwap_filter:
+            if self.prev_close is None or self.vwap is None:
+                trend_up = trend_dn = False
+            else:
+                trend_up = trend_up and self.prev_close >= self.vwap
+                trend_dn = trend_dn and self.prev_close <= self.vwap
         long_ok = cfg.direction in ("both", "long") and trend_up
         short_ok = cfg.direction in ("both", "short") and trend_dn
         return long_ok, short_ok
 
-    def _update_ema(self, close: float) -> None:
+    def _update_indicators(self, bar: Bar) -> None:
         if self.cfg.ema_trend_filter > 0:
             alpha = 2.0 / (self.cfg.ema_trend_filter + 1.0)
-            self.ema = close if self.ema is None else self.ema + alpha * (close - self.ema)
-        self.prev_close = close
+            self.ema = bar.close if self.ema is None else self.ema + alpha * (bar.close - self.ema)
+        if self.cfg.vwap_filter:
+            tp = (bar.high + bar.low + bar.close) / 3.0
+            self.cum_tpv += tp * bar.volume
+            self.cum_v += bar.volume
+            self.vwap = (self.cum_tpv / self.cum_v) if self.cum_v > 0 else None
+        self.prev_close = bar.close
 
     # --- events ------------------------------------------------------------
 
@@ -213,14 +235,14 @@ class OrbSessionEngine:
             if self.or_bars == 0 and t.time() != self.open_t:
                 # data/feed starts late: the true OR high/low is unknowable
                 self.state = "DONE"
-                self._update_ema(bar.close)
+                self._update_indicators(bar)
                 return [Info(f"{t.date()}: first bar at {t.time()} != session open "
                              f"{self.open_t} — no trading today")]
             if t < or_end:
                 self.or_high = max(self.or_high, bar.high)
                 self.or_low = min(self.or_low, bar.low)
                 self.or_bars += 1
-                self._update_ema(bar.close)
+                self._update_indicators(bar)
                 if self.or_bars == self._or_expected():
                     # OR complete the moment its last bar closes: arm entries
                     # now so they are live for the first post-OR bar.
@@ -228,12 +250,12 @@ class OrbSessionEngine:
                 return actions
             # a bar at/after or_end arrived while the OR is still incomplete
             self.state = "DONE"
-            self._update_ema(bar.close)
+            self._update_indicators(bar)
             return [Info(f"{t.date()}: opening range incomplete "
                          f"({self.or_bars}/{self._or_expected()} bars) — no trading today")]
 
         if self.state == "DONE":
-            self._update_ema(bar.close)
+            self._update_indicators(bar)
             return []
 
         is_flatten_bar = (self.cfg.flatten_at_close
@@ -249,7 +271,7 @@ class OrbSessionEngine:
                 if self.position["stop"] != old_stop:
                     actions.append(UpdateStop(self.position["stop"]))
 
-        self._update_ema(bar.close)
+        self._update_indicators(bar)
 
         if self.state == "ARMED" and self.entries_working:
             long_ok, short_ok = self._sides()
@@ -381,7 +403,8 @@ class ReplayRunner:
                 continue  # mirror the backtester's too-short-session guard
             for i, row in enumerate(rows):
                 bar = Bar(time=row.Index, open=float(row.open), high=float(row.high),
-                          low=float(row.low), close=float(row.close))
+                          low=float(row.low), close=float(row.close),
+                          volume=float(getattr(row, "volume", 0.0)))
                 last = i == len(rows) - 1
                 exited_this_bar = False
 
@@ -610,7 +633,8 @@ class IbkrRunner:
             self._seen.add(b.date)
             if isinstance(b.date, dt.datetime) and b.date.astimezone(tz).date() == today_local:
                 for action in self.engine.on_bar(
-                    Bar(time=b.date, open=b.open, high=b.high, low=b.low, close=b.close)
+                    Bar(time=b.date, open=b.open, high=b.high, low=b.low,
+                        close=b.close, volume=float(b.volume or 0.0))
                 ):
                     self._execute(action)
         self._suppress_orders = False
@@ -674,7 +698,8 @@ class IbkrRunner:
         self._seen.add(b.date)
         if not isinstance(b.date, dt.datetime):
             return
-        bar = Bar(time=b.date, open=b.open, high=b.high, low=b.low, close=b.close)
+        bar = Bar(time=b.date, open=b.open, high=b.high, low=b.low,
+                  close=b.close, volume=float(b.volume or 0.0))
         for action in self.engine.on_bar(bar):
             self._execute(action)
 

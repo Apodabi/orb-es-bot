@@ -69,6 +69,14 @@ class StrategyConfig:
     ema_trend_filter: int = 0          # 0 = off; else intraday EMA span: longs only above, shorts below
     no_entry_after: str = ""           # "" = off; e.g. "12:00" blocks new entries after this ET time
 
+    # --- round-2 entry filters (research/ROUND2_PREREG.md §2; all off by default) ---
+    vwap_filter: bool = False          # longs only above session VWAP, shorts only below (previous-bar values)
+    min_or_vs_median: float = 0.0      # 0 = off; OR size must be >= this x the median of the prior `or_median_days` sessions' OR sizes
+    or_median_days: int = 20           # history window for the OR-size median (needs this many prior measured ORs)
+    min_atr_percentile: float = 0.0    # 0 = off; prior-day ATR(atr_days) percentile rank within the trailing `atr_lookback` ATRs must be >= this (0-100)
+    atr_days: int = 14
+    atr_lookback: int = 60             # needs >= 30 prior ATR observations before any day can trade
+
     # --- in-trade stop management (option 3) ---
     breakeven_at_r: float = 0.0        # 0 = off; move stop to entry once price reaches this R
     trailing_stop_ticks: int = 0       # 0 = off; trail stop this many ticks behind the best price
@@ -99,3 +107,49 @@ VARIANTS = [
     StrategyConfig(name="OR30-2R-trail40-be1", or_minutes=30, target_type="r_multiple", r_multiple=2.0, breakeven_at_r=1.0, trailing_stop_ticks=40),
     StrategyConfig(name="OR30-1R-amcutoff", or_minutes=30, target_type="r_multiple", r_multiple=1.0, no_entry_after="12:00"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Round-2 pre-registered hypothesis set (research/ROUND2_PREREG.md §2).
+# 12 deliberate bets in three families; selection rules live in the prereg.
+# All round-2 backtests run with doubled slippage — the runner enforces
+# slippage_ticks=2.0; these definitions carry only the strategy shape.
+# ---------------------------------------------------------------------------
+
+ROUND2_VARIANTS = [
+    # H1 — asymmetry: larger targets, trailing/breakeven, accept 35-45% win rates
+    StrategyConfig(name="R2-H1a-2R-be1", r_multiple=2.0, breakeven_at_r=1.0),
+    StrategyConfig(name="R2-H1b-2R-trail-be", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40),
+    StrategyConfig(name="R2-H1c-3R-halfstop", stop_type="fraction", stop_fraction=0.5,
+                   r_multiple=3.0, trailing_stop_ticks=60),
+    StrategyConfig(name="R2-H1d-OR45-2R-be1", or_minutes=45, r_multiple=2.0,
+                   breakeven_at_r=1.0),
+    # H2 — regime filter: same shapes, but skip compressed/choppy days
+    StrategyConfig(name="R2-H2a-be1-bigOR", r_multiple=2.0, breakeven_at_r=1.0,
+                   min_or_vs_median=1.0),
+    StrategyConfig(name="R2-H2b-trail-bigOR", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40, min_or_vs_median=1.0),
+    StrategyConfig(name="R2-H2c-trail-atr50", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40, min_atr_percentile=50.0),
+    StrategyConfig(name="R2-H2d-be1-bigOR125", r_multiple=2.0, breakeven_at_r=1.0,
+                   min_or_vs_median=1.25),
+    StrategyConfig(name="R2-H2e-triple", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40, min_or_vs_median=1.0, vwap_filter=True),
+    # H3 — trend alignment: longs only above session VWAP, shorts only below
+    StrategyConfig(name="R2-H3a-be1-vwap", r_multiple=2.0, breakeven_at_r=1.0,
+                   vwap_filter=True),
+    StrategyConfig(name="R2-H3b-trail-vwap", r_multiple=2.0, breakeven_at_r=1.0,
+                   trailing_stop_ticks=40, vwap_filter=True),
+    StrategyConfig(name="R2-H3c-OR45-vwap", or_minutes=45, r_multiple=2.0,
+                   breakeven_at_r=1.0, vwap_filter=True),
+]
+
+# Max ONE pre-committed pick per family (prereg §3). H2e is the H1xH2xH3
+# combination and belongs to the H2 family.
+ROUND2_FAMILIES = {
+    "H1": ["R2-H1a-2R-be1", "R2-H1b-2R-trail-be", "R2-H1c-3R-halfstop", "R2-H1d-OR45-2R-be1"],
+    "H2": ["R2-H2a-be1-bigOR", "R2-H2b-trail-bigOR", "R2-H2c-trail-atr50",
+           "R2-H2d-be1-bigOR125", "R2-H2e-triple"],
+    "H3": ["R2-H3a-be1-vwap", "R2-H3b-trail-vwap", "R2-H3c-OR45-vwap"],
+}

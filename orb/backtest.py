@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import statistics
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -33,6 +34,8 @@ import pandas as pd
 
 from .config import StrategyConfig, ES, ContractSpec
 from .data import session_slice
+
+MIN_ATR_OBS = 30  # ATR-percentile filter needs at least this many prior ATRs
 
 
 @dataclass
@@ -199,7 +202,8 @@ def _resolve_exit(pos: dict, bar, cfg: StrategyConfig, entry_bar: bool = False):
     return px, first
 
 
-def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec):
+def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec,
+                  regime_ok: bool = True):
     """Returns (trades, skip_reason). skip_reason is None for tradeable days."""
     sess = session_slice(day_df, cfg.session_open, cfg.session_close)
     if sess.empty:
@@ -213,6 +217,9 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec)
         return [], "incomplete_or"
     or_high, or_low, or_end = orr
 
+    if not regime_ok:
+        return [], "regime_filter"
+
     rng_ticks = (or_high - or_low) / spec.tick_size
     if not (cfg.min_range_ticks <= rng_ticks <= cfg.max_range_ticks):
         return [], "range_filter"
@@ -224,15 +231,21 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec)
 
     after = sess[sess.index >= or_end]
 
-    # Optional intraday EMA trend filter. The decision for a stop order working
-    # during bar t can only use information available BEFORE bar t completes,
-    # so the filter compares the PREVIOUS bar's close to the previous bar's EMA.
-    prev_close = prev_ema = None
+    # Optional entry filters. The decision for a stop order working during
+    # bar t can only use information available BEFORE bar t completes, so every
+    # filter compares the PREVIOUS bar's close to the previous bar's indicator.
+    prev_close = prev_ema = prev_vwap = None
+    if cfg.ema_trend_filter > 0 or cfg.vwap_filter:
+        prev_close = sess["close"].shift(1)
     if cfg.ema_trend_filter > 0:
-        closes = sess["close"]
-        ema = closes.ewm(span=cfg.ema_trend_filter, adjust=False).mean()
-        prev_close = closes.shift(1)
+        ema = sess["close"].ewm(span=cfg.ema_trend_filter, adjust=False).mean()
         prev_ema = ema.shift(1)
+    if cfg.vwap_filter:
+        if "volume" not in sess.columns:
+            raise ValueError("vwap_filter=True requires a volume column in the data")
+        tp = (sess["high"] + sess["low"] + sess["close"]) / 3.0
+        vwap = (tp * sess["volume"]).cumsum() / sess["volume"].cumsum()
+        prev_vwap = vwap.shift(1)
 
     cutoff = dt.time.fromisoformat(cfg.no_entry_after) if cfg.no_entry_after else None
 
@@ -288,12 +301,19 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec)
             continue  # past the no-new-entries time
 
         if n_entries < cfg.max_trades_per_day:
+            trend_up = trend_dn = True
             if prev_close is not None:
-                pc, pe = prev_close.loc[t], prev_ema.loc[t]
-                trend_up = pd.notna(pc) and pd.notna(pe) and float(pc) >= float(pe)
-                trend_dn = pd.notna(pc) and pd.notna(pe) and float(pc) <= float(pe)
-            else:
-                trend_up = trend_dn = True
+                pc = prev_close.loc[t]
+                if prev_ema is not None:
+                    pe = prev_ema.loc[t]
+                    ok = pd.notna(pc) and pd.notna(pe)
+                    trend_up = trend_up and ok and float(pc) >= float(pe)
+                    trend_dn = trend_dn and ok and float(pc) <= float(pe)
+                if prev_vwap is not None:
+                    pv = prev_vwap.loc[t]
+                    ok = pd.notna(pc) and pd.notna(pv)
+                    trend_up = trend_up and ok and float(pc) >= float(pv)
+                    trend_dn = trend_dn and ok and float(pc) <= float(pv)
             long_ok = cfg.direction in ("both", "long") and trend_up
             short_ok = cfg.direction in ("both", "short") and trend_dn
 
@@ -379,6 +399,63 @@ def _close(pos: dict, t, fill: float, reason: str, cfg: StrategyConfig, spec: Co
     )
 
 
+def _day_context(df: pd.DataFrame, cfg: StrategyConfig) -> dict:
+    """Per-session regime flags for the cross-day filters (ROUND2_PREREG.md §2).
+
+    Returns {normalized-day -> may_trade}. Each day's flag uses ONLY prior
+    sessions' data plus the day's own opening range (known before any entry):
+    - OR-size filter: today's OR must be >= min_or_vs_median x the median of
+      the previous `or_median_days` measured ORs (needs that many priors).
+    - ATR filter: the ATR(atr_days) as of the PREVIOUS session must sit at or
+      above `min_atr_percentile` within the trailing `atr_lookback` ATRs
+      (inclusive percentile rank; needs >= MIN_ATR_OBS observations).
+    """
+    need_or = cfg.min_or_vs_median > 0
+    need_atr = cfg.min_atr_percentile > 0
+    ctx: dict = {}
+    or_hist: list[float] = []
+    tr_hist: list[float] = []
+    atr_hist: list[float] = []
+    prev_c: Optional[float] = None
+    for day, day_df in df.groupby(df.index.normalize()):
+        sess = session_slice(day_df, cfg.session_open, cfg.session_close)
+        orr = None
+        if len(sess):
+            bar_min = bar_minutes(sess.index)
+            orr = _opening_range(sess, cfg, bar_min)
+        or_size = (orr[0] - orr[1]) if orr else None
+
+        ok = True
+        if need_or:
+            window = or_hist[-cfg.or_median_days:]
+            ok = ok and (len(window) >= cfg.or_median_days and or_size is not None
+                         and or_size >= cfg.min_or_vs_median * statistics.median(window))
+        if need_atr:
+            # minimum history is on the TOTAL count; the rank window is the slice
+            if len(atr_hist) >= MIN_ATR_OBS:
+                window = atr_hist[-cfg.atr_lookback:]
+                val = window[-1]  # ATR as of the previous session
+                pct = 100.0 * sum(1 for x in window if x <= val) / len(window)
+                ok = ok and pct >= cfg.min_atr_percentile
+            else:
+                ok = False
+        ctx[day] = ok
+
+        # append today's stats only AFTER computing today's flag
+        if len(sess):
+            h = float(sess["high"].max())
+            l = float(sess["low"].min())
+            c = float(sess["close"].iloc[-1])
+            tr = (h - l) if prev_c is None else max(h - l, abs(h - prev_c), abs(l - prev_c))
+            tr_hist.append(tr)
+            if len(tr_hist) >= cfg.atr_days:
+                atr_hist.append(sum(tr_hist[-cfg.atr_days:]) / cfg.atr_days)
+            prev_c = c
+        if or_size is not None:
+            or_hist.append(or_size)
+    return ctx
+
+
 def run_backtest(df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec = ES,
                  stats: Optional[dict] = None) -> list[Trade]:
     """Run the ORB strategy over all sessions in `df`. Returns a list of trades.
@@ -392,8 +469,11 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec = ES,
     if stats is not None:
         stats.setdefault("sessions", 0)
         stats.setdefault("skipped", {})
-    for _, day_df in df.groupby(df.index.normalize()):
-        day_trades, skip = _simulate_day(day_df, cfg, spec)
+    needs_ctx = cfg.min_or_vs_median > 0 or cfg.min_atr_percentile > 0
+    ctx = _day_context(df, cfg) if needs_ctx else None
+    for day, day_df in df.groupby(df.index.normalize()):
+        regime_ok = True if ctx is None else bool(ctx.get(day, False))
+        day_trades, skip = _simulate_day(day_df, cfg, spec, regime_ok=regime_ok)
         trades.extend(day_trades)
         if stats is not None:
             stats["sessions"] += 1

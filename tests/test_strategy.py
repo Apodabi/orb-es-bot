@@ -396,6 +396,7 @@ def test_live_engine_replay_parity():
         _cfg(stop_type="fraction", stop_fraction=0.5, target_type="range_multiple", range_multiple=1.0),
         _cfg(target_type="r_multiple", r_multiple=2.0, breakeven_at_r=1.0, trailing_stop_ticks=40),
         _cfg(target_type="r_multiple", r_multiple=2.0, ema_trend_filter=20),
+        _cfg(target_type="r_multiple", r_multiple=2.0, breakeven_at_r=1.0, vwap_filter=True),
         _cfg(target_type="r_multiple", r_multiple=1.0, no_entry_after="12:00"),
         _cfg(allow_reentry=True, max_trades_per_day=3, stop_type="fixed", stop_ticks=20,
              target_type="fixed", target_ticks=30),
