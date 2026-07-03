@@ -220,7 +220,16 @@ def fetch_es_stitched(
     bars from its active (front-month) window, then stitches the windows into
     one continuous frame. No back-adjustment is applied — ORB trades intraday
     and is flat overnight, so roll gaps between sessions don't touch PnL.
+
+    The cutover between contracts happens at 17:00 ET on the roll date —
+    inside the daily maintenance halt, when no bars print — so adjacent bars
+    in the output are always from the same contract and every RTH session is
+    single-contract. The contract-spread level step still exists across that
+    halt (inherent to non-back-adjusted stitching); the one consumer that
+    crosses it is the ATR filter's true-range against the prior session close,
+    which is inflated by roughly the spread for ONE day per quarterly roll.
     """
+    from zoneinfo import ZoneInfo
     from ib_insync import IB
 
     start_d = dt.date.fromisoformat(start)
@@ -256,9 +265,17 @@ def fetch_es_stitched(
                     "accept the hole knowingly."
                 )
             df = _bars_to_df(bars)
-            ts = pd.to_datetime(df["timestamp"], utc=True)
-            mask = (ts.dt.date >= win_start) & (ts.dt.date < win_end)
-            df = df[mask]
+            # Trading day D runs 18:00 ET (D-1) -> 17:00 ET (D). Cut windows at
+            # 17:00 ET in the maintenance halt so no two adjacent bars straddle
+            # contracts (a mid-overnight cut would put the contract spread
+            # between neighboring 1-min bars).
+            et = ZoneInfo("America/New_York")
+            ts = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(et)
+            lo = pd.Timestamp(dt.datetime.combine(win_start - dt.timedelta(days=1),
+                                                  dt.time(17, 0)), tz=et)
+            hi = pd.Timestamp(dt.datetime.combine(win_end - dt.timedelta(days=1),
+                                                  dt.time(17, 0)), tz=et)
+            df = df[(ts >= lo) & (ts < hi)]
             print(f"  ES {month_code}: {len(df):,} bars for {win_start} -> {win_end}")
             frames.append(df)
     finally:

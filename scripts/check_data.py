@@ -135,18 +135,30 @@ def main() -> None:
         prev_t = dedup.index[i - 1]
         same_day = prev_t.date() == t.date()
         near_roll = any(abs((t.date() - r).days) <= 3 for r in roll_dates)
-        kind = ("INTRA-SESSION" if same_day
-                else "ROLL-BOUNDARY" if near_roll
-                else "overnight/weekend")
+        # a gap spanning the 17:00-18:00 ET maintenance halt is economically an
+        # overnight gap, not an intra-session move (16:59 -> 18:00+ same day)
+        crosses_halt = same_day and prev_t.time() < dt.time(18, 0) <= t.time()
+
+        if near_roll and crosses_halt:
+            kind = "ROLL-CUTOVER"     # expected contract-spread step at the stitch
+        elif near_roll and same_day and not crosses_halt:
+            kind = "BAD-STITCH"       # adjacent-bar teleport near a roll = corruption
+        elif crosses_halt or not same_day:
+            kind = "overnight/halt"
+        else:
+            kind = "INTRA-SESSION"    # true adjacent-minute move inside a session
         jump_rows.append((prev_t, t, p, kind))
         line = (f"{prev_t:%Y-%m-%d %H:%M}->{t:%m-%d %H:%M} ET  {p:.2f}%  [{kind}]  "
                 f"{closes[prev_t]:.2f}->{closes[t]:.2f}")
         if kind == "INTRA-SESSION":
             failures.append(f"intra-session jump > {args.jump_pct}%: {line}")
-        elif kind == "ROLL-BOUNDARY":
-            failures.append(f"possible bad roll stitch: {line}")
+        elif kind == "BAD-STITCH":
+            failures.append(f"bad roll stitch (adjacent bars from different contracts): {line}")
+        elif kind == "ROLL-CUTOVER":
+            warnings.append(f"contract-spread step at the roll cutover "
+                            f"(expected: non-back-adjusted stitch): {line}")
         else:
-            warnings.append(f"overnight gap > {args.jump_pct}% (can be legitimate news): {line}")
+            warnings.append(f"overnight/halt gap > {args.jump_pct}% (can be legitimate news): {line}")
 
     # ---- report ----------------------------------------------------------------
     print(f"\nData: {args.data}  ({dedup.index[0]:%Y-%m-%d} -> {dedup.index[-1]:%Y-%m-%d}, "
@@ -161,10 +173,11 @@ def main() -> None:
     if extra:
         print(f"(+ sessions outside the required range in: {', '.join(sorted(extra))})")
 
-    print(f"\njumps > {args.jump_pct}%: "
-          f"{sum(1 for r in jump_rows if r[3] == 'INTRA-SESSION')} intra-session, "
-          f"{sum(1 for r in jump_rows if r[3] == 'ROLL-BOUNDARY')} roll-boundary, "
-          f"{sum(1 for r in jump_rows if r[3] == 'overnight/weekend')} overnight/weekend")
+    counts = {k: sum(1 for r in jump_rows if r[3] == k)
+              for k in ("INTRA-SESSION", "BAD-STITCH", "ROLL-CUTOVER", "overnight/halt")}
+    print(f"\njumps > {args.jump_pct}%: {counts['INTRA-SESSION']} intra-session, "
+          f"{counts['BAD-STITCH']} bad-stitch, {counts['ROLL-CUTOVER']} roll-cutover (expected), "
+          f"{counts['overnight/halt']} overnight/halt")
 
     if warnings:
         print("\nWARNINGS (not fatal):")
