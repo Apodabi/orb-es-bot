@@ -148,3 +148,28 @@ picks — and is consumed regardless of outcome.**
   using them until live support with parity is built — which is required
   BEFORE any filtered candidate may be paper traded. This avoids silently
   breaking the backtest/live parity guarantee.
+
+---
+
+## Amendments log (provenance only — gate, hypotheses, and split unchanged)
+
+**2026-07-03 — fallback data plan activated (availability-triggered, §4).**
+The primary 2023-2024 fetch failed as anticipated: IBKR could not qualify the
+2023 contracts (2-year expired-contract retention). Dataset in force:
+`data/es_1min_r2.csv`, 2024-06-13 -> 2025-06-30, IS ends 2025-01-31, holdout
+begins 2025-02-01.
+
+**2026-07-03 — stitch cutover fix (data construction, pre-selection).**
+The integrity gate caught the UTC-midnight window cut placing the quarterly
+contract spread between adjacent overnight bars. Cutover moved to 17:00 ET in
+the maintenance halt (commit ec3ac9f); refetched; re-checked. No strategy,
+gate, or split decision changed.
+
+**2026-07-03 — accepted data exceptions (user sign-off, post-refetch check).**
+- (A) One zero-volume RTH minute on 2025-02-17 (Presidents' Day half-session);
+  flat bar, correct prices, volume unused by the backtester.
+- (B) Thirteen >1% intra-session 1-minute moves, all within the 2025-04-06 ->
+  2025-04-09 tariff-shock window (documented historic volatility; consecutive
+  prints with continuation). Accepted as REAL market history and deliberately
+  retained in the holdout — sanitizing them would bias the test in our favor.
+No other integrity failures remain; roll stitches verified clean (0 bad-stitch).
