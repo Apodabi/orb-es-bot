@@ -130,3 +130,9 @@ for paper trading," never "validated edge."
 ---
 
 ## Amendments log (provenance only)
+
+**2026-07-03 — data landed; §e split dates fixed BEFORE any backtest.**
+`data/nq_1min_r3.csv`: 725,532 bars, 2024-06-12 -> 2026-07-01 (ET sessions),
+528 RTH sessions, 9 stitched contracts, 0 bad stitches. Final 5 calendar
+months = holdout: **OOS = 2026-02-01 -> 2026-07-01. IS = 2024-06-12 ->
+2026-01-31.** Integrity verdict pending user sign-off on exceptions.
