@@ -224,8 +224,8 @@ def _simulate_day(day_df: pd.DataFrame, cfg: StrategyConfig, spec: ContractSpec,
     if not regime_ok:
         return [], "regime_filter"
 
-    rng_ticks = (or_high - or_low) / spec.tick_size
-    if not (cfg.min_range_ticks <= rng_ticks <= cfg.max_range_ticks):
+    rng_pct = 100.0 * (or_high - or_low) / ((or_high + or_low) / 2.0)
+    if not (cfg.min_range_pct <= rng_pct <= cfg.max_range_pct):
         return [], "range_filter"
 
     buf = cfg.entry_buffer_ticks * spec.tick_size

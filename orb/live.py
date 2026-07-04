@@ -308,11 +308,11 @@ class OrbSessionEngine:
 
     def _finalize_or(self, t: dt.datetime) -> list[Action]:
         cfg, spec = self.cfg, self.spec
-        rng_ticks = (self.or_high - self.or_low) / spec.tick_size
-        if not (cfg.min_range_ticks <= rng_ticks <= cfg.max_range_ticks):
+        rng_pct = 100.0 * (self.or_high - self.or_low) / ((self.or_high + self.or_low) / 2.0)
+        if not (cfg.min_range_pct <= rng_pct <= cfg.max_range_pct):
             self.state = "DONE"
-            return [Info(f"{t.date()}: OR range {rng_ticks:.0f} ticks outside "
-                         f"[{cfg.min_range_ticks}, {cfg.max_range_ticks}] — no trading today")]
+            return [Info(f"{t.date()}: OR range {rng_pct:.2f}% outside "
+                         f"[{cfg.min_range_pct}%, {cfg.max_range_pct}%] — no trading today")]
 
         buf = cfg.entry_buffer_ticks * spec.tick_size
         self.long_trigger = _round_to_tick(self.or_high + buf, spec)
@@ -325,7 +325,7 @@ class OrbSessionEngine:
         ss, st, _ = _exit_levels("short", self.short_trigger, self.or_high, self.or_low, cfg, spec)
         return [
             Info(f"{t.date()}: OR {self.or_low:.2f}-{self.or_high:.2f} "
-                 f"({rng_ticks:.0f} ticks) -> triggers L {self.long_trigger:.2f} / "
+                 f"({rng_pct:.2f}%) -> triggers L {self.long_trigger:.2f} / "
                  f"S {self.short_trigger:.2f}"),
             PlaceEntries(self.long_trigger, self.short_trigger,
                          self.long_active, self.short_active,

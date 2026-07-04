@@ -111,8 +111,12 @@ class StrategyConfig:
     conservative_fills: bool = True    # if a bar spans stop AND target, assume stop first
 
     # --- risk filter (skip days whose range is implausible) ---
-    min_range_ticks: int = 4           # ignore days with a tiny OR
-    max_range_ticks: int = 400         # ignore days with a blown-out OR
+    # Expressed as PERCENT of price (OR midpoint). Tick counts are hidden
+    # price-level assumptions: the old 400-tick cap (~2% of ES, never binding)
+    # was ~0.4% of NQ and silently gated most sessions — the round-3 harness
+    # defect. 0.02% / 2.0% reproduce the old caps' intent AT ES price levels.
+    min_range_pct: float = 0.02        # ignore days with a tiny OR (< this % of price)
+    max_range_pct: float = 2.0         # ignore days with a blown-out OR (> this % of price)
 
 
 # A handful of variants to race against the 60% win-rate gate.

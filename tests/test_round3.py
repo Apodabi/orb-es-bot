@@ -195,6 +195,33 @@ def test_benchmark_alpha_criterion():
 
 
 # --------------------------------------------------------------------------
+# round-3-corrected harness: the range gate is percentage-of-price
+# --------------------------------------------------------------------------
+
+def _priced_day(or_low, or_high):
+    """One day at arbitrary price level with a clean post-OR breakout."""
+    after = []
+    for i in range(30):
+        px = or_high + (or_high - or_low) * 0.02 * (i + 1)
+        after.append((px, px + 1, px - 1, px))
+    return _frame(_day_rows(dt.date(2024, 1, 2), or_low, or_high, after))
+
+
+def test_range_gate_is_price_relative():
+    cfg = _cfg()  # defaults: min 0.02%, max 2.0% of the OR midpoint
+    # ES-level intent preserved: ~5000 px, 100-pt OR (2.0%) allowed at the
+    # boundary; 110-pt OR (2.2%) blocked — matches the old 400-tick cap.
+    assert len(run_backtest(_priced_day(4950, 5049), cfg)) == 1     # 99pt/~5000 = 1.98%
+    assert run_backtest(_priced_day(4945, 5055), cfg) == []         # 110pt = 2.2%
+    # NQ-level regression: 100-pt OR at ~25,000 is 0.4% — the old tick cap
+    # wrongly blocked this; the percentage gate must allow it.
+    assert len(run_backtest(_priced_day(24950, 25050), cfg)) == 1   # 0.40%
+    assert run_backtest(_priced_day(24700, 25300), cfg) == []       # 600pt = 2.4%
+    # tiny-range floor scales too: 0.5-pt OR at 5000 (0.01%) blocked
+    assert run_backtest(_priced_day(4999.75, 5000.25), cfg) == []
+
+
+# --------------------------------------------------------------------------
 # hard boundary: executor refuses round-3 configs
 # --------------------------------------------------------------------------
 
@@ -221,6 +248,7 @@ TESTS = [
     test_max_hold_exits_at_open_and_no_target_fires,
     test_exit_at_clock_time,
     test_benchmark_alpha_criterion,
+    test_range_gate_is_price_relative,
     test_engine_refuses_round3_features,
 ]
 
