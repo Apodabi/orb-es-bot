@@ -154,3 +154,18 @@ months = holdout: **OOS = 2026-02-01 -> 2026-07-01. IS = 2024-06-12 ->
   several sit outside the RTH window; the rest are exactly the regimes the
   hypotheses claim to handle.
 No other integrity failures remain; roll stitches verified clean (0 bad-stitch).
+
+**2026-07-03 — pre-committed INSUFFICIENT EVIDENCE rule (user-proposed,
+signed off BEFORE the holdout look; justified only by IS trade frequency:
+H3d 47/421 sessions -> ~12 projected OOS trades, H2c -> ~17).**
+If a pick's ONLY failed criterion on the holdout is (c) >= 40 decided trades,
+its verdict is INSUFFICIENT EVIDENCE, not FAIL, and does NOT trigger §f's
+program-conclusion clause. The pick then freezes: parameters locked exactly
+as pre-registered; each new month of NQ data accrues as extended holdout;
+it is re-evaluated EXACTLY ONCE, at the first month-end where >= 40 decided
+trades exist across the union of the original holdout and accrued months,
+under the full unchanged gate (all seven criteria incl. benchmark alpha,
+computed over that whole window) plus the roll-date rule. No interim
+peeking; no parameter changes; §f's bar on new variants remains in force
+during any freeze. Any other failed criterion = FAIL as normal; passing
+everything = survivor as normal.
