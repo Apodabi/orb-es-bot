@@ -136,3 +136,21 @@ for paper trading," never "validated edge."
 528 RTH sessions, 9 stitched contracts, 0 bad stitches. Final 5 calendar
 months = holdout: **OOS = 2026-02-01 -> 2026-07-01. IS = 2024-06-12 ->
 2026-01-31.** Integrity verdict pending user sign-off on exceptions.
+
+**2026-07-03 — accepted data exceptions (user sign-off) + roll-date rule.**
+- (A) Roll-date sessions are retained AS-IS under the pre-registered
+  expiry-minus-8-days convention: the incoming contract's first RTH day is
+  thin (7 of 528 sessions, ~1.3%; 50 scattered flat zero-volume minutes;
+  median book depth 12 vs 824 contracts/min). Flagged as a known
+  cost-understatement risk: real slippage on those sessions likely exceeds
+  the doubled 2-tick assumption. PRE-COMMITTED RULE, fixed before selection:
+  if any pick reaches the holdout and passes the gate, its roll-date-session
+  trades are reported separately; if excluding those trades flips the gate
+  verdict from pass to fail, THE VERDICT IS FAIL.
+- (B) Sixteen >1% intra-session 1-minute moves accepted as documented
+  real-market events (2025-02-12 08:30 ET CPI print; 2025-04-02 16:13 tariff
+  announcement; the 2025-04-06 -> 04-09 shock cluster; 2026-03-23 07:05
+  pre-market move verified bar-by-bar in round 1). Retained in full —
+  several sit outside the RTH window; the rest are exactly the regimes the
+  hypotheses claim to handle.
+No other integrity failures remain; roll stitches verified clean (0 bad-stitch).
