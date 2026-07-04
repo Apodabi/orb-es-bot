@@ -193,3 +193,39 @@ non-pick (R3-H3b-noon) was made against the consumed holdout to decompose
 skip reasons for this verdict. Trade count and skip reasons only; no P&L
 was read or reported. The holdout was already consumed; nothing can select
 on it. Recorded here for completeness.
+
+**2026-07-03 — RULINGS 1 & 2 (user, on the record).**
+RULING 1: the letter verdict on the INSUFFICIENT EVIDENCE amendment stands;
+post-hoc reinterpretation forbidden. Drafting fix for FUTURE rounds: if (c)
+fails and all other failed criteria are within {d, e}, verdict is
+INSUFFICIENT EVIDENCE.
+RULING 2: Round 3 is re-categorized FAIL -> INVALID (instrument error) under
+this narrow criterion, added henceforth: "a round is INVALID only when a
+mechanical harness defect, verifiable from skip logs alone without reference
+to P&L, prevented registered strategy logic from executing on a supermajority
+of sessions including the unfiltered diagnostic siblings." The
+max_range_ticks=400 defect qualifies (98/107 holdout sessions gated even for
+the unfiltered sibling). §f is NOT triggered — no valid NQ test occurred;
+rounds 1-2 ES conclusions stand untouched. The 2026-02 -> 2026-07 NQ holdout
+remains PERMANENTLY CONSUMED regardless and is excluded from the corrected
+round entirely (not IS, not holdout). The post-look diagnostic (counts and
+skip reasons only, no P&L) is ratified as legitimate. STANDING CHECKLIST
+RULE: no future holdout look until skip reasons are decomposed and
+trade-count denominators are explained.
+
+**2026-07-03 — ROUND 3-CORRECTED protocol (locked before re-selection).**
+- Harness fix: session-gating thresholds become percentage-of-price
+  (min_range_pct=0.02%, max_range_pct=2.0% of the OR midpoint — the exact
+  ES-level intent of the old 4/400-tick caps), unit-tested on both ES- and
+  NQ-level prices. Audit conclusion: registered variant parameters
+  (trailing_stop_ticks, confirm_beyond_ticks, entry_buffer_ticks, slippage
+  in ticks per §a) are LOCKED variant identity and are retained as written;
+  their price-level dependence is a documented lesson for future design.
+- IS re-selection: 2024-06 -> 2026-01, locked round-3 variant set only,
+  doubled slippage, $2.45/side, <=1 pick per family, <=3 total.
+- Picks freeze. New holdout: live NQ data accruing from 2026-07-01 forward.
+  One re-evaluation per pick at the first month-end where it holds >= 40
+  decided trades, under the full unchanged gate incl. (g) and the roll-date
+  rule. Monthly trade-count checks permitted with P&L output suppressed.
+  If 9 months elapse without 40 decided trades: INSUFFICIENT EVIDENCE.
+  No interim parameter changes, no new variants, no peeking.

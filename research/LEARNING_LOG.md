@@ -121,3 +121,16 @@ consumed datasets, zero survivors. Any round four is either a structurally
 different strategy class or waits for >= 6 months of genuinely fresh data.
 
 > "A strategy that fails honestly is worth more than one that passes dishonestly."
+
+**Correction (2026-07-03, Ruling 2):** Round 3 above is re-categorized
+FAIL -> INVALID (instrument error): the max_range_ticks harness defect,
+verifiable from skip logs alone, prevented registered logic from executing
+on a supermajority of sessions. §f is NOT triggered; the program is not
+concluded. The NQ 2026-02 -> 2026-07 holdout stays permanently consumed.
+Round 3-corrected proceeds per the ROUND3_PREREG amendments: percentage-of-
+price harness gates, same locked variants, IS 2024-06 -> 2026-01, holdout =
+live data from 2026-07-01, frozen picks, one re-evaluation at >= 40 decided
+trades (9-month timeout -> INSUFFICIENT EVIDENCE). New standing rules:
+tick-denominated thresholds are hidden price-level assumptions; harness
+defects must be distinguishable from market verdicts (the INVALID criterion);
+skip decomposition precedes every holdout look.
