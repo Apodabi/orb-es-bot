@@ -229,3 +229,25 @@ trade-count denominators are explained.
   rule. Monthly trade-count checks permitted with P&L output suppressed.
   If 9 months elapse without 40 decided trades: INSUFFICIENT EVIDENCE.
   No interim parameter changes, no new variants, no peeking.
+
+**2026-07-03 — ROUND 3-CORRECTED: picks FROZEN.**
+Corrected-harness IS selection (2024-06-12 -> 2026-01-30, 421 sessions,
+doubled slippage, $2.45/side) over the locked variant set:
+- family H1: no eligible variant (robust across both harnesses) — no pick.
+- family H2 pick: **R3-H2c-bandwide** — IS net $15,888, PF 1.59, 233 decided,
+  exp $68.2, margin over naive benchmark +$73,305, ~12 trades/month,
+  roll-date exposure 3 trades (-$5).
+- family H3 pick: **R3-H3d-noon-band** — IS net $49,816, PF 1.47, 157 decided,
+  exp $317.3, margin over naive benchmark +$151,670, ~8 trades/month,
+  roll-date exposure 2 trades (-$140).
+Skip decomposition (checklist rule satisfied): Sundays/holidays + band
+regime_filter only; ZERO range_filter skips under the corrected gate; no
+incomplete-OR skips (the prior "NQ thin-print" hypothesis was wrong — the
+old tick cap explained everything).
+FREEZE TERMS: parameters locked as pre-registered. Holdout = live NQ data
+accruing from 2026-07-01. One re-evaluation per pick at the first month-end
+where it holds >= 40 decided trades, full unchanged gate incl. (g) and the
+roll-date rule. Monthly trade-count checks permitted with P&L suppressed.
+9 months without 40 decided trades -> INSUFFICIENT EVIDENCE. No interim
+parameter changes, no new variants, no peeking. Projected time-to-evaluation
+at IS cadence: ~4-6 months.
