@@ -169,3 +169,27 @@ computed over that whole window) plus the roll-date rule. No interim
 peeking; no parameter changes; §f's bar on new variants remains in force
 during any freeze. Any other failed criterion = FAIL as normal; passing
 everything = survivor as normal.
+
+**2026-07-03 — HOLDOUT CONSUMED; verdict FAIL x2; §f program conclusion.**
+One look, two picks: R3-H2c-bandwide traded ONCE in the 107-session holdout
+(+$340; criteria c, d, e failed); R3-H3d-noon-band traded ZERO times (all
+criteria failed vacuously). The INSUFFICIENT EVIDENCE rule's condition ("ONLY
+(c) failed") was NOT met as drafted — criteria d/e also failed, albeit as
+sample-size artifacts at n<=1. By the letter of the pre-registered rules both
+verdicts are FAIL and §f concludes the program.
+
+Root cause discovered post-holdout: the legacy max_range_ticks=400 cap
+(100 points — a never-binding sanity limit at ES price levels) was carried
+unadapted into the NQ variants, where 100 points is ~0.4% and the cap
+discarded most sessions (98/107 holdout sessions even unfiltered). The
+entire round — IS selection included — thus tested "ORB on unusually calm
+NQ days," not ORB on NQ. Per-instrument parameterization must include
+price-relative limits; this is recorded as the round's principal lesson.
+Any corrected re-test belongs to a future round on fresh data — this
+dataset is consumed.
+
+Deviation disclosure: after the official look, one diagnostic run of a
+non-pick (R3-H3b-noon) was made against the consumed holdout to decompose
+skip reasons for this verdict. Trade count and skip reasons only; no P&L
+was read or reported. The holdout was already consumed; nothing can select
+on it. Recorded here for completeness.

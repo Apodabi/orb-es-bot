@@ -80,3 +80,44 @@ OOS (2025-02 → 2025-06, selloff + tariff shock): all three picks negative.
   granularity; consider a structurally different idea before a round three.
 
 > "A strategy that fails honestly is worth more than one that passes dishonestly."
+
+---
+
+## Round 3 — NQ 2024-06 → 2026-07 stitched 1-min, profit gate + benchmark alpha (verdict 2026-07-03: FAIL x2; program concluded per §f)
+
+Protocol: prereg locked (commit a8424ee) before the fetch; 12 variants,
+follow-through / band / time-exit families; 2 picks (H1 produced none);
+one holdout look. Result: the picks traded 1 and 0 times in 107 sessions.
+
+1. **Parameterization is not just tick size and dollars.** The legacy
+   max_range_ticks=400 cap (never binding on ES) is price-level-relative in
+   disguise: at NQ ~25,000 it discarded 98/107 holdout sessions before any
+   strategy logic ran. The whole round unknowingly tested "ORB on NQ's
+   calmest days." Rule extracted: every threshold denominated in ticks or
+   points must be audited for price-level dependence when an instrument is
+   added — or expressed as a fraction of price.
+2. **H1 (follow-through conditioning) died in-sample:** all four variants
+   PF <= 1.14. Waiting for confirming closes just pays a worse price for the
+   same breakout. The round-2 "move already happened" diagnosis was right;
+   this repair was wrong.
+3. **Band filters self-disable when regimes shift** — the same failure shape
+   as round 2's OR-median filter, now from the other side: trailing-window
+   percentile bands stop passing days exactly when the distribution moves.
+   A filter whose pass-rate collapses out-of-regime is indistinguishable
+   from no strategy at all.
+4. **The pre-committed INSUFFICIENT EVIDENCE rule misfired on its edge
+   case:** at n<=1 trades, criteria d/e fail as sample-size artifacts, so
+   the "only (c) failed" condition can't trigger exactly when evidence is
+   most insufficient. Drafting lesson: sample-size deferral rules must
+   define which criteria are evaluable at what n.
+5. **Time exits remain the only shape that ever showed IS strength**
+   (+$55k unfiltered noon-exit IS on calm-day-conditioned data) — noted
+   honestly as the one thread a future program might pull, on fresh data,
+   with corrected parameterization, knowing it was never validated.
+
+**Program status: the intraday range-breakout program on index futures is
+concluded at the honest null (§f).** Three pre-registered rounds, three
+consumed datasets, zero survivors. Any round four is either a structurally
+different strategy class or waits for >= 6 months of genuinely fresh data.
+
+> "A strategy that fails honestly is worth more than one that passes dishonestly."
