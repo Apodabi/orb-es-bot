@@ -251,3 +251,15 @@ roll-date rule. Monthly trade-count checks permitted with P&L suppressed.
 9 months without 40 decided trades -> INSUFFICIENT EVIDENCE. No interim
 parameter changes, no new variants, no peeking. Projected time-to-evaluation
 at IS cadence: ~4-6 months.
+
+**2026-07-03 — freeze-period tooling (pre-committed before first use).**
+`scripts/holdout_count_check.py` is THE ONLY tool used during the freeze:
+stitched NQ fetch from the warmup date through the latest complete month,
+integrity check, then the two frozen picks only, reporting per-month decided
+counts, cumulative progress toward 40, and skip decomposition — with all
+P&L hard-suppressed (never printed, never written to disk; enforced by an
+output assertion and a unit test). Filter warmup rule: the trailing-OR
+history is seeded from 2026-05-01 (OR sizes only — no trades or P&L are
+taken or surfaced from any pre-holdout session); trades are counted and,
+at evaluation time, judged strictly from 2026-07-01 onward. The 9-month
+INSUFFICIENT EVIDENCE clock runs 2026-07-01 -> 2027-03-31.
